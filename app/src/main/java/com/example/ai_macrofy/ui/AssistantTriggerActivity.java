@@ -137,7 +137,8 @@ public class AssistantTriggerActivity extends AppCompatActivity {
                         "    \"actions\": [\n" +
                         "        {\"type\":\"touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
                         "        {\"type\":\"input\",\"text\":\"STRING_TO_INPUT\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
-                        "        {\"type\":\"scroll\",\"direction\":\"up|down|left|right\",\"distance\":INTEGER},\n" +
+                        "        // For SCROLL, find a scrollable element and provide its center coordinates. If none is found, omit 'coordinates'. 'distance' is ignored.\n" +
+                        "        {\"type\":\"scroll\",\"direction\":\"down|up|left|right\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
                         "        {\"type\":\"long_touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS},\n" +
                         "        {\"type\":\"drag_and_drop\",\"start\":{\"x\":INTEGER,\"y\":INTEGER},\"end\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS},\n" +
                         "        {\"type\":\"double_tap\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
@@ -148,7 +149,15 @@ public class AssistantTriggerActivity extends AppCompatActivity {
                         "        {\"type\":\"done\"}\n" +
                         "    ]\n" +
                         "}\n" +
-                        "```";
+                        "```\n\n" +
+                        "## Important Notes:\n" +
+                        "-   **Focus on User's Task, Not App Control**: Your main objective is to execute the user's command within other applications or the Android system. Avoid interacting with the UI elements of the macro application itself (like 'Start Macro', 'Settings' buttons shown in the initial screen of this app) unless specifically instructed by the user to control the macro's behavior. If the user's command is, for example, \"Send an email\", your actions should focus on opening the email app, composing, etc., not on clicking buttons within this macro control application.\n" + // 앱 제어 버튼 관련 지침 한 번 더 강조
+                        "-   **Package Name for Apps**: When using `open_application`, `application_name` MUST be the package name. **Prioritize using a package name from the 'Available Applications' list if the user's request matches an app in that list.** If the requested app is not in the list, or if the user's request is ambiguous, you may state that the specific app is not found in the provided list or ask for clarification. If you must guess a package name for an unlisted app, clearly indicate that it is a guess.\n" +
+                        "-   **Clickable Elements**: Prioritize `\"clickable\": true` elements. If not clickable, consider alternatives.\n" +
+                        "-   **`FrameLayout`**: Generally not interactive. Avoid direct touch unless clearly intended.\n" +
+                        "-   **Unexpected Screen or Stuck**: If the layout is unexpected or you cannot determine a useful action after receiving failure feedback (especially after a menu interaction), use `{\"actions\":[{\"type\":\"gesture\",\"name\":\"back\"}]}` to try to recover or dismiss unexpected UI elements. Asking for user clarification should be a last resort.\n" +
+                        "-   **Precision**: Be precise with coordinates and parameters.\n" +
+                        "-   **User's Command is Key**: The user's command drives the goal. `execution_feedback` and UI interaction patterns help you navigate obstacles to reach that goal.";
 
         Log.d(TAG, "Starting MyForegroundService with command: " + recognizedCommand);
         Toast.makeText(this, "Starting Ai_macrofy command...", Toast.LENGTH_SHORT).show();

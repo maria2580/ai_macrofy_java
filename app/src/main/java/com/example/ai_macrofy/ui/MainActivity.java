@@ -286,7 +286,8 @@ public class MainActivity extends AppCompatActivity {
                         "    \"actions\": [\n" +
                         "        {\"type\":\"touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
                         "        {\"type\":\"input\",\"text\":\"STRING_TO_INPUT\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
-                        "        {\"type\":\"scroll\",\"direction\":\"up|down|left|right\",\"distance\":INTEGER},\n" +
+                        "        // For SCROLL, find a scrollable element and provide its center coordinates. If none is found, omit 'coordinates'. 'distance' is ignored.\n" +
+                        "        {\"type\":\"scroll\",\"direction\":\"down|up|left|right\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
                         "        {\"type\":\"long_touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS},\n" +
                         "        {\"type\":\"drag_and_drop\",\"start\":{\"x\":INTEGER,\"y\":INTEGER},\"end\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS},\n" +
                         "        {\"type\":\"double_tap\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +

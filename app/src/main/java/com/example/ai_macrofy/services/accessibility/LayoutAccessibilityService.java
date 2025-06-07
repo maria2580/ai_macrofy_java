@@ -95,7 +95,7 @@ public class LayoutAccessibilityService extends AccessibilityService {
             }
         }
         jsonObject.put("children", childrenArray);
-        Log.d(TAG, "parseNodeToJson:"+jsonObject.toString());
+        //Log.d(TAG, "parseNodeToJson:"+jsonObject.toString());
         return jsonObject;
     }
 }

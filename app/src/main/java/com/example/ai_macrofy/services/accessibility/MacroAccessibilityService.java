@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -21,6 +22,10 @@ import com.example.ai_macrofy.services.foreground.MyForegroundService;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 public class MacroAccessibilityService extends AccessibilityService {
 
@@ -76,12 +81,18 @@ public class MacroAccessibilityService extends AccessibilityService {
             return;
         }
         try {
+            // Clean the JSON string from any potential markdown formatting
+            if (json.startsWith("```json")) {
+                json = json.substring(7, json.length() - 3).trim();
+            } else if (json.startsWith("```")) {
+                json = json.substring(3, json.length() - 3).trim();
+            }
+
             JSONObject jsonObject = new JSONObject(json);
             JSONArray actions = jsonObject.optJSONArray("actions");
 
             if (actions == null || actions.length() == 0) {
                 Log.w(TAG, "No actions found in JSON.");
-                // 액션이 없을 경우 MyForegroundService에 알릴 수 있음 (옵션)
                 if (MyForegroundService.instance != null) {
                     MyForegroundService.instance.reportActionCompleted(true, "No actions in JSON");
                 }
@@ -107,9 +118,8 @@ public class MacroAccessibilityService extends AccessibilityService {
                         if (!actionSuccess) actionFailureReason = "Input action failed. Check if the target is an editable field.";
                         break;
                     case "scroll":
-                        // Scroll은 성공/실패를 명확히 판단하기 어려울 수 있으므로, 일단 true로 가정
                         actionSuccess = handleScroll(action);
-                        if (!actionSuccess) actionFailureReason = "Scroll action failed."; // 실제로는 판단 로직 필요
+                        if (!actionSuccess) actionFailureReason = "Scroll action failed.";
                         break;
                     case "long_touch":
                         actionSuccess = handleLongTouch(action);
@@ -133,7 +143,7 @@ public class MacroAccessibilityService extends AccessibilityService {
                         break;
                     case "wait":
                         actionSuccess = handleWait(action);
-                        if (!actionSuccess) actionFailureReason = "Wait action failed."; // wait은 보통 실패하지 않음
+                        if (!actionSuccess) actionFailureReason = "Wait action failed.";
                         break;
                     case "open_application":
                         actionSuccess = handleOpenApplication(action);
@@ -141,13 +151,11 @@ public class MacroAccessibilityService extends AccessibilityService {
                         break;
                     case "done":
                         handleDone();
-                        actionSuccess = true; // 'done'은 MyForegroundService를 중지시키므로 성공으로 간주
-                        // MyForegroundService.instance.reportActionCompleted(true, "Task marked as done.");
-                        // MyForegroundService.instance.stopMacroExecution(); // MyForegroundService에 중지 요청
-                        return; // 'done'이면 즉시 종료
+                        actionSuccess = true;
+                        return;
                     default:
                         Log.w(TAG, "Unknown action type: " + type);
-                        actionSuccess = false; // 알 수 없는 타입은 실패로 간주
+                        actionSuccess = false;
                         actionFailureReason = "Unknown action type: " + type;
                         break;
                 }
@@ -156,7 +164,7 @@ public class MacroAccessibilityService extends AccessibilityService {
                     allActionsSuccessful = false;
                     lastFailureReason = "Action type '" + type + "' failed: " + actionFailureReason;
                     Log.e(TAG, lastFailureReason);
-                    break; // 첫 번째 실패에서 중단하고 피드백
+                    break;
                 }
 
                 if (!"wait".equals(type) && !"done".equals(type) && actions.length() > 1 && i < actions.length() -1) {
@@ -164,7 +172,6 @@ public class MacroAccessibilityService extends AccessibilityService {
                 }
             }
 
-            // 모든 액션 처리 후 MyForegroundService에 결과 알림
             if (MyForegroundService.instance != null) {
                 if (allActionsSuccessful) {
                     MyForegroundService.instance.reportActionCompleted(true, null);
@@ -196,7 +203,6 @@ public class MacroAccessibilityService extends AccessibilityService {
             return true;
         }
     }
-    // 각 handle 메소드는 boolean (성공 여부)을 반환하도록 수정
     private boolean handleTouch(JSONObject action) throws JSONException {
         JSONObject coordinates = action.getJSONObject("coordinates");
         int x = coordinates.getInt("x");
@@ -218,9 +224,16 @@ public class MacroAccessibilityService extends AccessibilityService {
 
     private boolean handleScroll(JSONObject action) throws JSONException {
         String direction = action.getString("direction");
-        int distance = action.getInt("distance");
-        performScroll(direction, distance);
-        return true; // 스크롤은 성공/실패 판단이 어려워 일단 true
+        JSONObject coordinates = action.optJSONObject("coordinates");
+        if (coordinates != null) {
+            int x = coordinates.getInt("x");
+            int y = coordinates.getInt("y");
+            Log.d(TAG, "Targeted scroll requested for direction '" + direction + "' at (" + x + "," + y + ")");
+            return performScroll(direction, x, y);
+        } else {
+            Log.d(TAG, "Generic screen scroll requested for direction '" + direction + "'");
+            return performScroll(direction, -1, -1);
+        }
     }
 
     private boolean handleLongTouch(JSONObject action) throws JSONException {
@@ -228,8 +241,7 @@ public class MacroAccessibilityService extends AccessibilityService {
         int x = coordinates.getInt("x");
         int y = coordinates.getInt("y");
         long duration = action.getLong("duration");
-        performLongTouch(x, y, duration);
-        return true; // 제스처는 성공/실패 판단이 어려워 일단 true
+        return performLongTouch(x, y, duration);
     }
 
     private boolean handleDragAndDrop(JSONObject action) throws JSONException {
@@ -240,16 +252,14 @@ public class MacroAccessibilityService extends AccessibilityService {
         int endX = end.getInt("x");
         int endY = end.getInt("y");
         long duration = action.getLong("duration");
-        performDragAndDrop(startX, startY, endX, endY, duration);
-        return true; // 제스처는 성공/실패 판단이 어려워 일단 true
+        return performDragAndDrop(startX, startY, endX, endY, duration);
     }
 
     private boolean handleDoubleTap(JSONObject action) throws JSONException {
         JSONObject coordinates = action.getJSONObject("coordinates");
         int x = coordinates.getInt("x");
         int y = coordinates.getInt("y");
-        performDoubleTap(x, y);
-        return true; // 제스처는 성공/실패 판단이 어려워 일단 true
+        return performDoubleTap(x, y);
     }
 
     private boolean handleSwipe(JSONObject action) throws JSONException {
@@ -260,15 +270,14 @@ public class MacroAccessibilityService extends AccessibilityService {
         int endX = end.getInt("x");
         int endY = end.getInt("y");
         long duration = action.getLong("duration");
-        performSwipe(startX, startY, endX, endY, duration);
-        return true; // 제스처는 성공/실패 판단이 어려워 일단 true
+        return performSwipe(startX, startY, endX, endY, duration);
     }
 
     private boolean handleWait(JSONObject action) throws JSONException {
         long duration = action.getLong("duration");
         if (duration <= 0) {
             Log.w(TAG, "Wait duration must be positive. Received: " + duration);
-            return false; // 잘못된 duration은 실패로 간주
+            return false;
         }
         Log.d(TAG, "Performing wait for " + duration + " ms");
         try {
@@ -332,11 +341,12 @@ public class MacroAccessibilityService extends AccessibilityService {
 
     private void handleDone() {
         Log.d(TAG, "Execution completed (handleDone called).");
-        MyForegroundService.instance.stopMacroExecution();
+        if (MyForegroundService.instance != null) {
+            MyForegroundService.instance.stopMacroExecution();
+        }
         mainThreadHandler.post(() -> Toast.makeText(getApplicationContext(), "완료했습니다.", Toast.LENGTH_LONG).show());
     }
 
-    // 각 perform 메소드는 boolean (성공 여부)을 반환하도록 수정
     private boolean performTouch(int x, int y) {
         AccessibilityNodeInfo rootNode = getRootInActiveWindow();
         if (rootNode != null) {
@@ -344,14 +354,10 @@ public class MacroAccessibilityService extends AccessibilityService {
             if (targetNode != null && targetNode.isClickable()) {
                 Log.d(TAG, "Node found at (" + x + ", " + y + "): " + targetNode.getClassName() + ". Performing ACTION_CLICK.");
                 boolean success = targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                // targetNode.recycle(); // 주의: findNodeAtCoordinates에서 반환된 노드는 재활용하면 안됨
-                // rootNode.recycle(); // 주의
                 if(success) return true;
                 Log.w(TAG, "ACTION_CLICK failed on node. Trying gesture.");
             }
-            // rootNode.recycle(); // 주의
         }
-        // ACTION_CLICK 실패 또는 적절한 노드 없음 -> 제스처 시도
         return performGestureTouch(x,y);
     }
 
@@ -362,24 +368,19 @@ public class MacroAccessibilityService extends AccessibilityService {
 
         GestureDescription.Builder gestureBuilder = new GestureDescription.Builder();
         gestureBuilder.addStroke(new GestureDescription.StrokeDescription(path, 0, 100L));
-        // dispatchGesture는 boolean을 반환하지 않으므로, 콜백으로 성공/취소 여부 판단 필요
-        // 여기서는 단순화를 위해 일단 true를 반환하지만, 실제로는 콜백 결과에 따라 결정해야 함
-        dispatchGesture(gestureBuilder.build(), new GestureResultCallback() {
+        return dispatchGesture(gestureBuilder.build(), new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
                 super.onCompleted(gestureDescription);
                 Log.d(TAG, "Touch gesture completed at (" + x + ", " + y + ")");
-                // 성공 알림 필요 시 여기서 MyForegroundService.instance.report... 호출
             }
 
             @Override
             public void onCancelled(GestureDescription gestureDescription) {
                 super.onCancelled(gestureDescription);
                 Log.w(TAG, "Touch gesture cancelled at (" + x + ", " + y + ")");
-                // 실패 알림 필요 시 여기서 MyForegroundService.instance.report... 호출
             }
         }, null);
-        return true; //  GestureResultCallback에서 실제 결과를 처리해야 함.
     }
 
 
@@ -388,19 +389,12 @@ public class MacroAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo rootNode = getRootInActiveWindow();
         if (rootNode != null) {
             AccessibilityNodeInfo targetNode = findNodeAtCoordinatesForInput(rootNode, x, y);
-            if (targetNode != null && (targetNode.isEditable() || targetNode.isFocusable())) { // 입력 가능 조건 강화
+            if (targetNode != null && (targetNode.isEditable() || targetNode.isFocusable())) {
                 Log.d(TAG, "Node for input found: " + targetNode.getClassName());
-                boolean focusSuccess = targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
-                if (!focusSuccess) {
-                    Log.w(TAG, "ACTION_FOCUS failed on node for input.");
-                    // 실패로 간주하거나, 바로 setText 시도
-                }
-
+                targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
                 Bundle args = new Bundle();
                 args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
                 boolean setTextSuccess = targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
-                // targetNode.recycle();
-                // rootNode.recycle();
                 if (!setTextSuccess) {
                     Log.w(TAG, "ACTION_SET_TEXT failed on node.");
                     return false;
@@ -410,7 +404,6 @@ public class MacroAccessibilityService extends AccessibilityService {
                 }
             } else {
                 Log.w(TAG, "No suitable node found or node not editable/focusable at (" + x + ", " + y + ") for input.");
-                // rootNode.recycle();
                 return false;
             }
         }
@@ -419,131 +412,525 @@ public class MacroAccessibilityService extends AccessibilityService {
     }
 
     private AccessibilityNodeInfo findNodeAtCoordinatesForInput(AccessibilityNodeInfo node, int x, int y) {
-        // 입력 필드를 찾기 위한 더 정교한 로직이 필요할 수 있음 (className, isEditable 등)
-        return findNodeAtCoordinates(node, x, y); // 일단 기존 로직 재사용
+        return findNodeAtCoordinates(node, x, y);
     }
 
-    // performScroll, performLongTouch 등 다른 perform... 메소드들도 GestureResultCallback을 사용하여
-    // 실제 성공/실패 여부를 판단하고 boolean 값을 반환하도록 수정하는 것이 이상적입니다.
-    // 여기서는 간결성을 위해 대부분 true를 반환하도록 두었습니다.
-
-    private void performDoubleTap(int x, int y) {
+    private boolean performDoubleTap(int x, int y) {
         Path path = new Path();
         path.moveTo((float) x, (float) y);
         GestureDescription.Builder gestureBuilder = new GestureDescription.Builder();
         gestureBuilder.addStroke(new GestureDescription.StrokeDescription(path, 0L, 100L));
         gestureBuilder.addStroke(new GestureDescription.StrokeDescription(path, 200L, 100L));
-        dispatchGesture(gestureBuilder.build(), null, null); // 콜백으로 결과 처리 필요
+        return dispatchGesture(gestureBuilder.build(), null, null);
     }
 
 
-    private void performLongTouch(int x, int y, long duration) {
+    private boolean performLongTouch(int x, int y, long duration) {
         Path path = new Path();
         path.moveTo((float) x, (float) y);
         GestureDescription.Builder gestureBuilder = new GestureDescription.Builder();
         gestureBuilder.addStroke(new GestureDescription.StrokeDescription(path, 0L, duration));
-        dispatchGesture(gestureBuilder.build(), null, null); // 콜백으로 결과 처리 필요
+        return dispatchGesture(gestureBuilder.build(), null, null);
+    }
+    /**
+     * [REVISED] Main scroll logic with a candidate prioritization system.
+     *//*
+    *//**
+     * [REVISED] Main scroll logic with a targeted gesture fallback.
+     *//*
+    private boolean performScroll(String direction, int x, int y) {
+        List<AccessibilityNodeInfo> candidates = findScrollableCandidatesAt(x, y);
+        AccessibilityNodeInfo bestTarget = chooseBestScrollableNode(candidates, direction);
+
+        if (bestTarget != null) {
+            Log.d(TAG, "Best scroll target chosen: " + bestTarget.getClassName());
+
+            // Get bounds before trying the action, in case the node is recycled.
+            Rect targetBounds = new Rect();
+            bestTarget.getBoundsInScreen(targetBounds);
+
+            // 1. Programmatic scroll attempt
+            boolean success = bestTarget.performAction(getScrollActionId(direction));
+            bestTarget.recycle();
+
+            if (success) {
+                Log.d(TAG, "Programmatic scroll successful.");
+                // Recycle any remaining candidates
+                for(AccessibilityNodeInfo node : candidates) if(node != null) node.recycle();
+                return true;
+            }
+
+            // 2. Targeted Gesture Fallback
+            Log.w(TAG, "Programmatic scroll failed. Falling back to TARGETED gesture scroll.");
+            for(AccessibilityNodeInfo node : candidates) if(node != null) node.recycle();
+            return performGestureScroll(direction, targetBounds);
+
+        } else {
+            Log.d(TAG, "No suitable scrollable node found. Falling back to GLOBAL gesture scroll.");
+            return performGestureScroll(direction, null); // No target, so use global gesture
+        }
     }
 
+    *//**
+     * [NEW] Chooses the best scrollable node from a list of candidates based on priority.
+     *//*
+    private AccessibilityNodeInfo chooseBestScrollableNode(List<AccessibilityNodeInfo> candidates, String direction) {
+        if (candidates.isEmpty()) return null;
 
-    private boolean performScroll(String direction, int distance) { //
-        // 화면 중앙 근처에서 시작하는 것이 더 일반적일 수 있습니다.
-        // 화면 크기를 가져와서 동적으로 계산하는 것이 좋습니다.
-        int screenWidth = getResources().getDisplayMetrics().widthPixels;
-        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        boolean isHorizontal = "left".equalsIgnoreCase(direction) || "right".equalsIgnoreCase(direction);
 
-        float startX = screenWidth / 2f;
-        float startY = screenHeight / 2f;
-        float endX = startX;
-        float endY = startY;
-
-        // 스크롤 거리는 "distance" 파라미터를 좀 더 직접적으로 활용하거나,
-        // 화면 크기에 비례한 값으로 조정하는 것이 좋을 수 있습니다.
-        // 현재 distance는 픽셀 단위로 가정하고 스와이프 길이에 반영합니다.
-        // 너무 짧은 distance는 스크롤로 인식되지 않을 수 있습니다.
-        // LLM이 제공하는 distance가 적절한 범위 내에 있는지 확인하거나,
-        // 너무 작으면 최소 스크롤 길이를 보장하는 로직이 필요할 수 있습니다.
-        // 예를 들어, distance가 화면 높이/너비의 특정 비율 이상이 되도록 합니다.
-        int effectiveDistance = Math.max(distance, screenHeight / 4); // 예: 최소 스크롤 거리 보장 (화면 높이의 1/4)
-
-        switch (direction.toLowerCase()) { //
-            case "down": // 콘텐츠를 아래로 내리려면 손가락은 위에서 아래로 스와이프 (스크롤바를 아래로)
-                startY = screenHeight * 0.3f; // 화면 상단에서 시작
-                endY = startY + effectiveDistance;
-                if (endY > screenHeight * 0.9f) endY = screenHeight * 0.9f; // 화면 하단 경계
-                break;
-            case "up": // 콘텐츠를 위로 올리려면 손가락은 아래에서 위로 스와이프 (스크롤바를 위로)
-                startY = screenHeight * 0.7f; // 화면 하단에서 시작
-                endY = startY - effectiveDistance;
-                if (endY < screenHeight * 0.1f) endY = screenHeight * 0.1f; // 화면 상단 경계
-                break;
-            case "left": // 콘텐츠를 왼쪽으로 옮기려면 손가락은 오른쪽에서 왼쪽으로 스와이프
-                startX = screenWidth * 0.7f; // 화면 오른쪽에서 시작
-                startY = screenHeight / 2f; // Y축 중앙
-                endX = startX - effectiveDistance;
-                endY = startY;
-                if (endX < screenWidth * 0.1f) endX = screenWidth * 0.1f; // 화면 왼쪽 경계
-                break;
-            case "right": // 콘텐츠를 오른쪽으로 옮기려면 손가락은 왼쪽에서 오른쪽으로 스와이프
-                startX = screenWidth * 0.3f; // 화면 왼쪽에서 시작
-                startY = screenHeight / 2f; // Y축 중앙
-                endX = startX + effectiveDistance;
-                endY = startY;
-                if (endX > screenWidth * 0.9f) endX = screenWidth * 0.9f; // 화면 오른쪽 경계
-                break;
-            default:
-                Log.w(TAG, "Unknown scroll direction: " + direction); //
-                return false; // 알 수 없는 방향은 실패
+        // 1st Priority: Specific vertical scrollers (RecyclerView, ScrollView, ListView)
+        for (AccessibilityNodeInfo node : candidates) {
+            CharSequence className = node.getClassName();
+            if (className != null && (className.toString().contains("RecyclerView") || className.toString().contains("ScrollView") || className.toString().contains("ListView"))) {
+                Log.d(TAG, "Choosing priority 1 target: " + className);
+                candidates.remove(node); // Remove to avoid double recycling
+                return node;
+            }
         }
 
-        Path path = new Path(); //
-        path.moveTo(startX, startY); //
-        path.lineTo(endX, endY); //
-
-        GestureDescription.Builder gestureBuilder = new GestureDescription.Builder(); //
-        // 스크롤 제스처의 지속 시간 (duration)도 중요합니다. 너무 짧으면 탭으로 인식될 수 있고,
-        // 너무 길면 사용자가 답답함을 느낄 수 있습니다. 300ms ~ 800ms 사이가 일반적입니다.
-        gestureBuilder.addStroke(new GestureDescription.StrokeDescription(path, 0L, 500L)); //
-
-        // dispatchGesture의 결과를 콜백으로 받아 성공/실패를 판단해야 합니다.
-        // 현재는 콜백 처리가 없어 항상 true를 반환하게 될 수 있습니다.
-        // 실제 성공 여부를 반영하도록 수정이 필요합니다.
-        boolean gestureDispatched = dispatchGesture(gestureBuilder.build(), new GestureResultCallback() { //
-            @Override
-            public void onCompleted(GestureDescription gestureDescription) {
-                super.onCompleted(gestureDescription);
-                Log.d(TAG, "Scroll gesture completed in direction: " + direction + " by " + distance); //
-                // 여기서 MyForegroundService.instance.reportActionCompleted(true, null); 와 같이 성공을 알릴 수 있습니다.
-                // 다만, 이 콜백은 비동기이므로 performScroll 메소드의 반환 값과 동기화하기 어렵습니다.
-                // performScroll의 반환 값은 제스처가 '성공적으로 시스템에 전달되었는지' 여부만 나타낼 수 있습니다.
+        // 2nd Priority: ViewPager, but only for horizontal scrolls
+        if (isHorizontal) {
+            for (AccessibilityNodeInfo node : candidates) {
+                CharSequence className = node.getClassName();
+                if (className != null && className.toString().contains("ViewPager")) {
+                    Log.d(TAG, "Choosing priority 2 target (ViewPager for horizontal scroll): " + className);
+                    candidates.remove(node);
+                    return node;
+                }
             }
+        }
 
-            @Override
-            public void onCancelled(GestureDescription gestureDescription) {
-                super.onCancelled(gestureDescription);
-                Log.w(TAG, "Scroll gesture cancelled: " + direction); //
-                // 여기서 MyForegroundService.instance.reportActionCompleted(false, "Scroll gesture was cancelled"); 와 같이 실패를 알릴 수 있습니다.
+        // 3rd Priority: Any other scrollable view (that isn't a ViewPager if scrolling vertically)
+        for (AccessibilityNodeInfo node : candidates) {
+            if(isHorizontal) { // For horizontal, any remaining scrollable is fine
+                Log.d(TAG, "Choosing priority 3 target (any scrollable for horizontal): " + node.getClassName());
+                candidates.remove(node);
+                return node;
+            } else { // For vertical, avoid ViewPager
+                CharSequence className = node.getClassName();
+                if(className != null && !className.toString().contains("ViewPager")) {
+                    Log.d(TAG, "Choosing priority 3 target (non-ViewPager for vertical): " + node.getClassName());
+                    candidates.remove(node);
+                    return node;
+                }
             }
-        }, null);
+        }
 
-        return gestureDispatched; // dispatchGesture의 반환 값은 boolean (API 24 이상)
+        return null; // No suitable node found
     }
-    private void performSwipe(int startX, int startY, int endX, int endY, long duration) {
+
+    *//**
+     * [REVISED] Performs a gesture scroll. If bounds are provided, it's a targeted gesture.
+     * Otherwise, it's a global gesture on the whole screen.
+     * @param direction "up", "down", "left", or "right"
+     * @param bounds The specific Rect of the target view to scroll within, or null for global.
+     *//*
+    private boolean performGestureScroll(String direction, Rect bounds) {
+        Rect scrollBounds = new Rect();
+
+        if (bounds != null && !bounds.isEmpty()) {
+            Log.d(TAG, "Performing targeted gesture within bounds: " + bounds.toShortString());
+            scrollBounds.set(bounds);
+        } else {
+            AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+            if (rootNode == null) return false;
+            rootNode.getBoundsInScreen(scrollBounds);
+            rootNode.recycle();
+            Log.d(TAG, "Performing global gesture within screen bounds: " + scrollBounds.toShortString());
+        }
+
+        int startX, startY, endX, endY;
+        // Use percentages of the TARGET's dimensions, not the whole screen
+        switch (direction.toLowerCase()) {
+            case "down":
+                startX = endX = scrollBounds.centerX();
+                startY = scrollBounds.top + (int) (scrollBounds.height() * 0.7f);
+                endY = scrollBounds.top + (int) (scrollBounds.height() * 0.3f);
+                break;
+            case "up":
+                startX = endX = scrollBounds.centerX();
+                startY = scrollBounds.top + (int) (scrollBounds.height() * 0.3f);
+                endY = scrollBounds.top + (int) (scrollBounds.height() * 0.7f);
+                break;
+            case "right":
+                startY = endY = scrollBounds.centerY();
+                startX = scrollBounds.left + (int) (scrollBounds.width() * 0.8f);
+                endX = scrollBounds.left + (int) (scrollBounds.width() * 0.2f);
+                break;
+            case "left":
+                startY = endY = scrollBounds.centerY();
+                startX = scrollBounds.left + (int) (scrollBounds.width() * 0.2f);
+                endX = scrollBounds.left + (int) (scrollBounds.width() * 0.8f);
+                break;
+            default: return false;
+        }
+
+        Log.d(TAG, "Gesture scroll " + direction + ": from (" + startX + ", " + startY + ") to (" + endX + ", " + endY + ")");
+        Path path = new Path();
+        path.moveTo(startX, startY);
+        path.lineTo(endX, endY);
+        return dispatchGesture(new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path, 0L, 400L)).build(), null, null);
+    }
+
+    private int getScrollActionId(String direction) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            switch (direction.toLowerCase()) {
+                case "down": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId();
+                case "up": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId();
+                case "left": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.getId();
+                case "right": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.getId();
+            }
+        }
+        switch (direction.toLowerCase()) {
+            case "down": case "right": return AccessibilityNodeInfo.ACTION_SCROLL_FORWARD;
+            case "up": case "left": return AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD;
+        }
+        return -1;
+    }
+
+    // --- Find Node Methods ---
+
+    *//**
+     * [NEW] Finds all scrollable ancestors of a point and returns them as a list for prioritization.
+     *//*
+    private List<AccessibilityNodeInfo> findScrollableCandidatesAt(int x, int y) {
+        if (x < 0 || y < 0) return Collections.emptyList();
+
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+        if (rootNode == null) return Collections.emptyList();
+
+        AccessibilityNodeInfo deepestNode = findDeepestNodeAt(rootNode, x, y);
+        rootNode.recycle(); // Done with the root
+        if (deepestNode == null) return Collections.emptyList();
+
+        List<AccessibilityNodeInfo> candidates = new ArrayList<>();
+        AccessibilityNodeInfo parent = deepestNode;
+        while (parent != null) {
+            if (parent.isScrollable()) {
+                candidates.add(AccessibilityNodeInfo.obtain(parent));
+            }
+            parent = parent.getParent();
+        }
+        deepestNode.recycle();
+        // The list now contains scrollable nodes from deepest to highest ancestor.
+        return candidates;
+    }
+
+    private AccessibilityNodeInfo findDeepestNodeAt(AccessibilityNodeInfo node, int x, int y) {
+        if (node == null) return null;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.contains(x, y)) {
+            return null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            AccessibilityNodeInfo foundInChild = findDeepestNodeAt(child, x, y);
+            if(child != null) child.recycle(); // Recycle child after use
+            if (foundInChild != null) {
+                return foundInChild;
+            }
+        }
+        return AccessibilityNodeInfo.obtain(node);
+    }
+    // --- Logging and Debugging Methods ---
+
+    private void logNodeDetails(AccessibilityNodeInfo node) {
+        if (node == null) {
+            Log.d(TAG, "[Node Details] Node is null.");
+            return;
+        }
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+
+        Log.d(TAG, "[Node Details] Class Name: " + node.getClassName());
+        Log.d(TAG, "[Node Details] Text: " + node.getText());
+        Log.d(TAG, "[Node Details] Content Desc: " + node.getContentDescription());
+        Log.d(TAG, "[Node Details] Bounds in Screen: " + bounds.toShortString());
+        Log.d(TAG, "[Node Details] Is Scrollable: " + node.isScrollable());
+        Log.d(TAG, "[Node Details] Is Enabled: " + node.isEnabled());
+        Log.d(TAG, "[Node Details] Is Visible to User: " + node.isVisibleToUser());
+        Log.d(TAG, "[Node Details] Supported Actions: " + getActionNames(node.getActionList()));
+    }
+
+    private String getActionNames(List<AccessibilityNodeInfo.AccessibilityAction> actionList) {
+        if (actionList == null || actionList.isEmpty()) return "NONE";
+        StringBuilder names = new StringBuilder();
+        for (AccessibilityNodeInfo.AccessibilityAction action : actionList) {
+            names.append(getActionName(action)).append(", ");
+        }
+        return names.toString();
+    }
+
+    private String getActionName(AccessibilityNodeInfo.AccessibilityAction action) {
+        int id = action.getId();
+        if (id == AccessibilityNodeInfo.ACTION_FOCUS) return "FOCUS";
+        if (id == AccessibilityNodeInfo.ACTION_CLEAR_FOCUS) return "CLEAR_FOCUS";
+        if (id == AccessibilityNodeInfo.ACTION_SELECT) return "SELECT";
+        if (id == AccessibilityNodeInfo.ACTION_CLICK) return "CLICK";
+        if (id == AccessibilityNodeInfo.ACTION_LONG_CLICK) return "LONG_CLICK";
+        if (id == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) return "SCROLL_FORWARD";
+        if (id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) return "SCROLL_BACKWARD";
+        if (id == AccessibilityNodeInfo.ACTION_COPY) return "COPY";
+        if (id == AccessibilityNodeInfo.ACTION_PASTE) return "PASTE";
+        if (id == AccessibilityNodeInfo.ACTION_SET_TEXT) return "SET_TEXT";
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId()) return "SCROLL_UP";
+            if (id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId()) return "SCROLL_DOWN";
+            if (id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.getId()) return "SCROLL_LEFT";
+            if (id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.getId()) return "SCROLL_RIGHT";
+        }
+        return action.getLabel() != null ? action.getLabel().toString() : "CUSTOM_ACTION_ID_" + id;
+    }*/
+
+    /**
+     * The final, most robust scroll logic.
+     */
+    private boolean performScroll(String direction, int x, int y) {
+        List<AccessibilityNodeInfo> candidates = findScrollableCandidatesAt(x, y);
+        AccessibilityNodeInfo bestTarget = chooseBestScrollableNode(candidates, direction);
+        logNodeDetails(bestTarget);
+
+        if (bestTarget != null) {
+            Log.d(TAG, "Best scroll target chosen: " + bestTarget.getClassName());
+            Rect targetBounds = new Rect();
+            bestTarget.getBoundsInScreen(targetBounds);
+
+            // 1. Programmatic scroll attempt
+            boolean success = bestTarget.performAction(getScrollActionId(direction));
+
+            if (success) {
+                Log.d(TAG, "Programmatic scroll successful.");
+                bestTarget.recycle();
+                // Recycle remaining candidates
+                for(AccessibilityNodeInfo node : candidates) if(node != null) node.recycle();
+                return true;
+            }
+
+            // 2. Targeted Gesture Fallback
+            Log.w(TAG, "Programmatic scroll failed. Falling back to TARGETED gesture scroll.");
+            bestTarget.recycle();
+            for(AccessibilityNodeInfo node : candidates) if(node != null) node.recycle();
+            return performGestureScroll(direction, targetBounds);
+
+        } else {
+            Log.d(TAG, "No suitable scrollable node found. Falling back to GLOBAL gesture scroll.");
+            return performGestureScroll(direction, null);
+        }
+    }
+
+    private AccessibilityNodeInfo chooseBestScrollableNode(List<AccessibilityNodeInfo> candidates, String direction) {
+        if (candidates.isEmpty()) return null;
+        boolean isHorizontal = "left".equalsIgnoreCase(direction) || "right".equalsIgnoreCase(direction);
+
+        // 1st Priority: Specific scrollers like RecyclerView, ScrollView, ListView
+        for (AccessibilityNodeInfo node : candidates) {
+            CharSequence className = node.getClassName();
+            if (className != null && (className.toString().contains("RecyclerView") || className.toString().contains("ScrollView") || className.toString().contains("ListView"))) {
+                Log.d(TAG, "Choosing priority 1 target: " + className);
+                candidates.remove(node);
+                return node;
+            }
+        }
+
+        // 2nd Priority: ViewPager, but ONLY for horizontal scrolls
+        if (isHorizontal) {
+            for (AccessibilityNodeInfo node : candidates) {
+                if (node.getClassName() != null && node.getClassName().toString().contains("ViewPager")) {
+                    Log.d(TAG, "Choosing priority 2 target (ViewPager for horizontal): " + node.getClassName());
+                    candidates.remove(node);
+                    return node;
+                }
+            }
+        }
+
+        // 3rd Priority: Any other scrollable view, avoiding ViewPagers for vertical scrolls
+        for (AccessibilityNodeInfo node : candidates) {
+            if (isHorizontal || (node.getClassName() != null && !node.getClassName().toString().contains("ViewPager"))) {
+                Log.d(TAG, "Choosing priority 3 target: " + node.getClassName());
+                candidates.remove(node);
+                return node;
+            }
+        }
+        return null; // No suitable node found
+    }
+
+    private boolean performGestureScroll(String direction, Rect bounds) {
+        Rect scrollBounds = new Rect();
+        if (bounds != null && !bounds.isEmpty()) {
+            Log.d(TAG, "Performing targeted gesture within bounds: " + bounds.toShortString());
+            scrollBounds.set(bounds);
+        } else {
+            AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+            if (rootNode == null) return false;
+            rootNode.getBoundsInScreen(scrollBounds);
+            rootNode.recycle();
+            Log.d(TAG, "Performing global gesture within screen bounds: " + scrollBounds.toShortString());
+        }
+
+        int startX, startY, endX, endY;
+        switch (direction.toLowerCase()) {
+            case "down":
+                startX = endX = scrollBounds.centerX();
+                startY = scrollBounds.top + (int) (scrollBounds.height() * 0.8f); // Start lower
+                endY = scrollBounds.top + (int) (scrollBounds.height() * 0.2f); // End higher
+                break;
+            case "up":
+                startX = endX = scrollBounds.centerX();
+                startY = scrollBounds.top + (int) (scrollBounds.height() * 0.2f);
+                endY = scrollBounds.top + (int) (scrollBounds.height() * 0.8f);
+                break;
+            case "right":
+                startY = endY = scrollBounds.centerY();
+                startX = scrollBounds.left + (int) (scrollBounds.width() * 0.8f);
+                endX = scrollBounds.left + (int) (scrollBounds.width() * 0.2f);
+                break;
+            case "left":
+                startY = endY = scrollBounds.centerY();
+                startX = scrollBounds.left + (int) (scrollBounds.width() * 0.2f);
+                endX = scrollBounds.left + (int) (scrollBounds.width() * 0.8f);
+                break;
+            default: return false;
+        }
+
+        Log.d(TAG, "Gesture scroll " + direction + ": from (" + startX + ", " + startY + ") to (" + endX + ", " + endY + ")");
+        Path path = new Path();
+        path.moveTo(startX, startY);
+        path.lineTo(endX, endY);
+        return dispatchGesture(new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path, 0L, 1600L)).build(), null, null);
+    }
+
+    private int getScrollActionId(String direction) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            switch (direction.toLowerCase()) {
+                case "down": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.getId();
+                case "up": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.getId();
+                case "left": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.getId();
+                case "right": return AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.getId();
+            }
+        }
+        switch (direction.toLowerCase()) {
+            case "down": case "right": return AccessibilityNodeInfo.ACTION_SCROLL_FORWARD;
+            case "up": case "left": return AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD;
+        }
+        return -1;
+    }
+
+    // --- Find Node Methods ---
+    private List<AccessibilityNodeInfo> findScrollableCandidatesAt(int x, int y) {
+        if (x < 0 || y < 0) return Collections.emptyList();
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+        if (rootNode == null) return Collections.emptyList();
+        AccessibilityNodeInfo deepestNode = findDeepestNodeAt(rootNode, x, y);
+        if (deepestNode == null) return Collections.emptyList();
+
+        List<AccessibilityNodeInfo> candidates = new ArrayList<>();
+        AccessibilityNodeInfo parent = deepestNode;
+        while (parent != null) {
+            if (parent.isScrollable()) {
+                candidates.add(AccessibilityNodeInfo.obtain(parent));
+            }
+            AccessibilityNodeInfo oldParent = parent;
+            parent = parent.getParent();
+            if(oldParent != deepestNode) oldParent.recycle();
+        }
+        deepestNode.recycle();
+        return candidates;
+    }
+
+    private AccessibilityNodeInfo findDeepestNodeAt(AccessibilityNodeInfo node, int x, int y) {
+        if (node == null) return null;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.contains(x, y)) {
+            return null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            AccessibilityNodeInfo foundInChild = findDeepestNodeAt(child, x, y);
+            if(child != null) child.recycle();
+            if (foundInChild != null) {
+                return foundInChild;
+            }
+        }
+        return AccessibilityNodeInfo.obtain(node);
+    }
+
+// 아래 두 메소드를 MacroAccessibilityService 클래스 내부에 추가하세요.
+
+    /**
+     * 노드의 상세 정보를 Logcat에 출력하는 헬퍼 메소드
+     * @param node 분석할 노드
+     */
+    private void logNodeDetails(AccessibilityNodeInfo node) {
+        if (node == null) {
+            Log.d(TAG, "[Node Details] Node is null.");
+            return;
+        }
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+
+        Log.d(TAG, "[Node Details] Class Name: " + node.getClassName());
+        Log.d(TAG, "[Node Details] Text: " + node.getText());
+        Log.d(TAG, "[Node Details] Content Desc: " + node.getContentDescription());
+        Log.d(TAG, "[Node Details] Bounds in Screen: " + bounds.toShortString());
+        Log.d(TAG, "[Node Details] Is Scrollable: " + node.isScrollable());
+        Log.d(TAG, "[Node Details] Is Enabled: " + node.isEnabled());
+        Log.d(TAG, "[Node Details] Is Visible to User: " + node.isVisibleToUser());
+        Log.d(TAG, "[Node Details] Child Count: " + node.getChildCount());
+        Log.d(TAG, "[Node Details] Supported Actions: " + getActionNames(node.getActionList()));
+    }
+
+    /**
+     * AccessibilityAction 리스트를 사람이 읽을 수 있는 문자열로 변환합니다.
+     * @param actionList 변환할 액션 리스트
+     * @return 액션 이름들의 문자열
+     */
+    private String getActionNames(java.util.List<AccessibilityNodeInfo.AccessibilityAction> actionList) {
+        if (actionList == null || actionList.isEmpty()) {
+            return "NONE";
+        }
+        StringBuilder names = new StringBuilder();
+        for (AccessibilityNodeInfo.AccessibilityAction action : actionList) {
+            int id = action.getId();
+            String name;
+            switch (id) {
+                case AccessibilityNodeInfo.ACTION_FOCUS: name = "FOCUS"; break;
+                case AccessibilityNodeInfo.ACTION_CLEAR_FOCUS: name = "CLEAR_FOCUS"; break;
+                case AccessibilityNodeInfo.ACTION_SELECT: name = "SELECT"; break;
+                case AccessibilityNodeInfo.ACTION_CLICK: name = "CLICK"; break;
+                case AccessibilityNodeInfo.ACTION_LONG_CLICK: name = "LONG_CLICK"; break;
+                case AccessibilityNodeInfo.ACTION_SCROLL_FORWARD: name = "SCROLL_FORWARD"; break;
+                case AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD: name = "SCROLL_BACKWARD"; break;
+                case AccessibilityNodeInfo.ACTION_COPY: name = "COPY"; break;
+                case AccessibilityNodeInfo.ACTION_PASTE: name = "PASTE"; break;
+                case AccessibilityNodeInfo.ACTION_SET_TEXT: name = "SET_TEXT"; break;
+                default:
+                    name = action.getLabel() != null ? action.getLabel().toString() : "CUSTOM_ACTION_ID_" + id;
+                    break;
+            }
+            names.append(name).append(", ");
+        }
+        return names.toString();
+    }
+
+    private boolean performSwipe(int startX, int startY, int endX, int endY, long duration) {
         Path path = new Path();
         path.moveTo((float) startX, (float) startY);
         path.lineTo((float) endX, (float) endY);
         GestureDescription.Builder gestureBuilder = new GestureDescription.Builder();
         gestureBuilder.addStroke(new GestureDescription.StrokeDescription(path, 0L, duration));
-        dispatchGesture(gestureBuilder.build(), null, null); // 콜백으로 결과 처리 필요
+        return dispatchGesture(gestureBuilder.build(), null, null);
     }
 
-    private void performDragAndDrop(int startX, int startY, int endX, int endY, long duration) {
+    private boolean performDragAndDrop(int startX, int startY, int endX, int endY, long duration) {
         Path path = new Path();
         path.moveTo((float) startX, (float) startY);
         path.lineTo((float) endX, (float) endY);
         GestureDescription.Builder gestureBuilder = new GestureDescription.Builder();
         gestureBuilder.addStroke(new GestureDescription.StrokeDescription(path, 0L, duration));
-        dispatchGesture(gestureBuilder.build(), null, null); // 콜백으로 결과 처리 필요
+        return dispatchGesture(gestureBuilder.build(), null, null);
     }
 
     private AccessibilityNodeInfo findNodeAtCoordinates(AccessibilityNodeInfo parentNode, int x, int y) {
@@ -553,28 +940,19 @@ public class MacroAccessibilityService extends AccessibilityService {
         Rect bounds = new Rect();
         parentNode.getBoundsInScreen(bounds);
 
-        // 가장 작은 클릭 가능한 노드를 우선하므로, 자식 노드부터 재귀적으로 탐색
         for (int i = 0; i < parentNode.getChildCount(); i++) {
             AccessibilityNodeInfo childNode = parentNode.getChild(i);
             if (childNode != null) {
-                // 자식 노드의 영역을 먼저 확인하고, 그 안에 좌표가 있으면 더 깊이 탐색
                 Rect childBounds = new Rect();
                 childNode.getBoundsInScreen(childBounds);
-                if (childBounds.contains(x,y)) { // 현재 좌표가 자식 노드 영역 내에 있을 때만 재귀 호출
+                if (childBounds.contains(x,y)) {
                     AccessibilityNodeInfo foundNode = findNodeAtCoordinates(childNode, x, y);
                     if (foundNode != null) {
-                        // childNode.recycle(); // 주의: findNodeAtCoordinates에서 반환된 노드는 재활용하면 안됨
-                        return foundNode; // 가장 깊은 곳의 노드를 찾으면 바로 반환
+                        return foundNode;
                     }
                 }
-                // childNode.recycle(); // 루프 내에서 자식 노드 재활용 주의
             }
         }
-
-        // 자식 노드에서 찾지 못했거나, 현재 노드가 리프 노드에 가까울 경우, 현재 노드 확인
-        // 클릭 가능하고 좌표를 포함하는 "가장 작은" 노드를 찾는 것이 목표
-        // 위의 재귀 로직이 더 작은 자식 노드를 우선적으로 반환하므로,
-        // 여기까지 왔다면 현재 parentNode가 해당 좌표를 포함하는 가장 적합한 후보일 수 있음
         if (bounds.contains(x, y) && parentNode.isClickable()) {
             return parentNode;
         }
