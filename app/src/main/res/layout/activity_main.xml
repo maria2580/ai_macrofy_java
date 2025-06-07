@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    tools:context=".ui.MainActivity"
+    android:background="@color/background_color">
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp">
+        <TextView
+            android:id="@+id/app_name_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:text="Ai_macrofy"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_color" />
+        <Button
+            android:id="@+id/button_settings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:text="Settings"
+            style="?android:attr/borderlessButtonStyle"
+            />
+    </RelativeLayout>
+
+
+    <TextView
+        android:id="@+id/textView_result"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/edittext_background_color"
+        android:padding="8dp"
+        android:text="Waiting for command..."
+        android:textColor="@color/text_color"
+        android:textSize="18sp"
+        android:layout_marginBottom="8dp"/>
+
+    <EditText
+        android:id="@+id/textView_recognized_prompt"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Spoken command will appear here..."
+        android:padding="8dp"
+        android:background="@color/edittext_background_color"
+        android:textColor="@color/text_color"
+        android:textColorHint="@color/text_color"
+        android:layout_marginBottom="16dp"
+        android:minLines="2"/>
+
+    <Button
+        android:id="@+id/button_record_prompt"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Tap to Speak Command"
+        android:backgroundTint="@color/button_color"
+        android:textColor="@color/button_text_color"
+        android:layout_marginBottom="8dp"/>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/button_start_macro"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="START MACRO"
+            android:backgroundTint="@color/button_color"
+            android:textColor="@color/button_text_color"
+            android:layout_marginEnd="4dp"/>
+
+        <Button
+            android:id="@+id/button_stop_macro"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="STOP MACRO"
+            android:backgroundTint="@color/button_color"
+            android:textColor="@color/button_text_color"
+            android:layout_marginStart="4dp"/>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/textView_current_api_key_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="API Key status: Not loaded"
+        android:layout_marginTop="16dp"
+        android:gravity="center_horizontal"/>
+
+</LinearLayout>

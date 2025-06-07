@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="AI Provider"
+        android:textSize="18sp"
+        android:layout_marginBottom="8dp"/>
+
+    <RadioGroup
+        android:id="@+id/radioGroup_ai_provider"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+        <RadioButton
+            android:id="@+id/radioButton_openai"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="OpenAI GPT-4o-mini"/>
+        <RadioButton
+            android:id="@+id/radioButton_gemini"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Google Gemini"/>
+    </RadioGroup>
+
+    <EditText
+        android:id="@+id/editText_openai_api_key_settings"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="OpenAI API Key"
+        android:layout_marginTop="16dp"
+        android:inputType="textPassword"/>
+
+    <EditText
+        android:id="@+id/editText_gemini_api_key_settings"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Google Gemini API Key"
+        android:layout_marginTop="8dp"
+        android:inputType="textPassword"/>
+
+    <Button
+        android:id="@+id/button_save_settings"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="24dp"
+        android:text="Save Settings"/>
+</LinearLayout>

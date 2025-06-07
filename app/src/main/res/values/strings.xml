@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ai_macrofy_java</string>
+    <string name="accessibility_service_description">This service helps automate tasks based on screen content and your instructions.</string>
+</resources>
