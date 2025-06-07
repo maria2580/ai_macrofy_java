@@ -46,7 +46,7 @@ public class MyForegroundService extends Service {
 
     private Handler mainHandler;
     private Handler timerHandler;
-    private volatile boolean isMacroRunning = false;
+    public static boolean isMacroRunning = false;
 
     private List<Pair<String, String>> actionHistoryForRepetitionCheck;
     private List<ChatMessage> chatHistory;
@@ -316,7 +316,7 @@ public class MyForegroundService extends Service {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     "AI Macrofy Service",
-                    NotificationManager.IMPORTANCE_LOW
+                    NotificationManager.IMPORTANCE_DEFAULT
             );
             channel.setDescription("AI Macrofy is running background tasks.");
             NotificationManager manager = getSystemService(NotificationManager.class);

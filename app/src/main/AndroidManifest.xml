@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
@@ -35,6 +38,18 @@
         <activity
             android:name=".ui.SettingsActivity"
             android:label="Settings" />
+
+        <activity
+            android:name=".ui.AssistantTriggerActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay"
+            tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="com.example.ai_macrofy.action.EXECUTE_MACRO" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
 
         <service
             android:name=".services.accessibility.MacroAccessibilityService"

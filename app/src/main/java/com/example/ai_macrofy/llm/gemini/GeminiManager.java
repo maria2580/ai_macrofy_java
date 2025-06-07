@@ -201,7 +201,7 @@ public class GeminiManager implements AiModelService {
             geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(currentParts, "user"));
         }
 
-        Integer thinkingBudget = 1024;
+        Integer thinkingBudget = 128;
         Log.d("GeminiManager", "Final content items for Gemini: " + geminiApiContents.size());
         // Gemini API는 엄격한 user/model 번갈아 나오는 순서를 요구할 수 있음.
         // 위 로직은 system prompt를 첫 user 메시지로 보내고, history를 붙이고, 현재 user 메시지를 붙이는 방식.

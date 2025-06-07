@@ -74,7 +74,7 @@ public class LayoutAccessibilityService extends AccessibilityService {
 
         jsonObject.put("className", node.getClassName() != null ? node.getClassName().toString() : "");
         jsonObject.put("text", node.getText() != null ? node.getText().toString() : "");
-        // jsonObject.put("contentDescription", node.getContentDescription() != null ? node.getContentDescription().toString() : "");
+        jsonObject.put("contentDescription", node.getContentDescription() != null ? node.getContentDescription().toString() : "");
 
         int x = (bounds.right + bounds.left) / 2;
         int y = (bounds.bottom + bounds.top) / 2;
@@ -95,7 +95,7 @@ public class LayoutAccessibilityService extends AccessibilityService {
             }
         }
         jsonObject.put("children", childrenArray);
-        //Log.d(TAG, "parseNodeToJson:"+jsonObject.toString());
+        Log.d(TAG, "parseNodeToJson:"+jsonObject.toString());
         return jsonObject;
     }
 }

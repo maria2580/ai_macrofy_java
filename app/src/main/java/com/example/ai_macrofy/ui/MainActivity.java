@@ -2,21 +2,20 @@ package com.example.ai_macrofy.ui;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.content.ActivityNotFoundException;
-// import android.content.Context; // AppPreferences에서 사용
 import android.content.Context;
 import android.content.Intent;
-// import android.content.SharedPreferences; // AppPreferences에서 사용
+import android.content.pm.LauncherActivityInfo;
+import android.content.pm.LauncherApps;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
-import android.graphics.Point;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.util.Log;
 import android.util.Pair;
-import android.view.Display;
 import android.view.WindowManager;
 import android.view.WindowMetrics;
 import android.widget.Button;
@@ -34,18 +33,19 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
-import com.example.ai_macrofy.R; // R import 추가
-import com.example.ai_macrofy.services.accessibility.LayoutAccessibilityService; // 수정된 경로
-import com.example.ai_macrofy.services.accessibility.MacroAccessibilityService; // 수정된 경로
-import com.example.ai_macrofy.services.foreground.MyForegroundService;       // 수정된 경로
-import com.example.ai_macrofy.utils.AppPreferences;                       // 수정된 경로
-import android.content.pm.ApplicationInfo; // 추가
+import com.example.ai_macrofy.R;
+import com.example.ai_macrofy.services.accessibility.LayoutAccessibilityService;
+import com.example.ai_macrofy.services.accessibility.MacroAccessibilityService;
+import com.example.ai_macrofy.services.foreground.MyForegroundService;
+import com.example.ai_macrofy.utils.AppPreferences;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -55,11 +55,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView textViewResult;
     private EditText textViewRecognizedPrompt;
     private TextView textViewCurrentApiKeyStatus;
-    // private Button buttonRecordPrompt; // onCreate에서 초기화
-    // private Button buttonSettings; // onCreate에서 초기화
 
     private AppPreferences appPreferences;
-    private boolean isCapturing = false;
     private String currentRecognizedText = "";
     int screenWidth;
     int screenHeight;
@@ -70,7 +67,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
-        setContentView(R.layout.activity_main); // 레이아웃 파일 이름 확인
+        setContentView(R.layout.activity_main);
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
@@ -79,12 +76,10 @@ public class MainActivity extends AppCompatActivity {
         WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
 
         WindowMetrics windowMetrics = windowManager.getCurrentWindowMetrics();
-        // Insets을 제외한 순수 bounds를 사용하려면 getBounds()를 사용합니다.
-        // 시스템 바 (상태 표시줄, 네비게이션 바 등)를 고려하려면 getWindowInsets()와 함께 계산 필요.
-        // 여기서는 전체 화면 크기를 가정합니다.
         android.graphics.Rect bounds = windowMetrics.getBounds();
         screenWidth = bounds.width();
         screenHeight = bounds.height();
+        Log.d("mainActivity", "onCreate: screenWidth: "+screenWidth+","+screenHeight);
 
 
         appPreferences = new AppPreferences(this);
@@ -110,15 +105,18 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Please enable 'Ai_macrofy (Layout)' Accessibility Service.", Toast.LENGTH_LONG).show();
                 startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
             } else {
-                if (!isCapturing) {
+                if (!MyForegroundService.isMacroRunning) {
                     currentRecognizedText = textViewRecognizedPrompt.getText().toString();
                     if (currentRecognizedText.isEmpty()) {
                         Toast.makeText(this, "Please speak a command first.", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    isCapturing = true;
-                    Log.d("MainActivity", "Start Macro button clicked. isCapturing: " + isCapturing);
-                    startMacro(currentRecognizedText);
+                    Log.d("MainActivity", "Start Macro button clicked. MyForegroundService.isMacroRunning: " + MyForegroundService.isMacroRunning);
+                    // Run heavy work in background to avoid blocking UI thread
+                    new Thread(() -> {
+                        String launchableAppsList = getLaunchableApplicationsListString();
+                        runOnUiThread(() -> startMacro(currentRecognizedText, launchableAppsList));
+                    }).start();
                 } else {
                     Toast.makeText(this, "Macro is already running.", Toast.LENGTH_SHORT).show();
                 }
@@ -126,9 +124,9 @@ public class MainActivity extends AppCompatActivity {
         });
 
         buttonStopMacro.setOnClickListener(v -> {
-            if (isCapturing) {
-                isCapturing = false;
-                Log.d("MainActivity", "Stop Macro button clicked. isCapturing: " + isCapturing);
+            if (MyForegroundService.isMacroRunning) {
+                MyForegroundService.instance.stopMacroExecution();
+                Log.d("MainActivity", "Stop Macro button clicked. MyForegroundService.isMacroRunning: " + MyForegroundService.isMacroRunning);
                 stopService(new Intent(this, MyForegroundService.class));
                 textViewResult.setText("Macro Stopped");
             } else {
@@ -142,7 +140,6 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         loadAndDisplayApiKeyStatus();
     }
-
     private void loadAndDisplayApiKeyStatus() {
         String currentProvider = appPreferences.getAiProvider();
         String apiKey = appPreferences.getApiKeyForCurrentProvider();
@@ -150,8 +147,6 @@ public class MainActivity extends AppCompatActivity {
 
         if (apiKey != null && !apiKey.isEmpty()) {
             textViewCurrentApiKeyStatus.setText(providerName + " API Key: Loaded");
-            // 각 매니저에 API 키를 여기서 다시 설정할 필요는 없습니다.
-            // MyForegroundService가 시작될 때 AppPreferences에서 직접 가져와서 설정합니다.
         } else {
             textViewCurrentApiKeyStatus.setText(providerName + " API Key: Not Set");
         }
@@ -163,7 +158,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
             Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault()); // 현재 시스템 언어 사용
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
             intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your command...");
             try {
                 startActivityForResult(intent, SPEECH_REQUEST_CODE);
@@ -207,73 +202,50 @@ public class MainActivity extends AppCompatActivity {
         return enabledServicesSetting != null && enabledServicesSetting.toLowerCase().contains(serviceId.toLowerCase());
     }
 
+    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
     private String getLaunchableApplicationsListString() {
-        PackageManager pm = getPackageManager();
-        // 설치된 모든 애플리케이션 정보를 가져옵니다.
-        List<ApplicationInfo> allInstalledApps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+        // Use the modern LauncherApps service for an accurate list of apps across profiles
+        LauncherApps launcherApps = (LauncherApps) getSystemService(Context.LAUNCHER_APPS_SERVICE);
+        if (launcherApps == null) {
+            return "Could not access LauncherApps service.\n";
+        }
 
-        if (allInstalledApps == null || allInstalledApps.isEmpty()) {
+        List<Pair<String, String>> launchableApps = new ArrayList<>();
+        Set<String> addedPackages = new HashSet<>(); // To avoid duplicates
+
+        // Get apps from all available user profiles (main, work, secure folder, etc.)
+        List<UserHandle> profiles = launcherApps.getProfiles();
+        for (UserHandle profile : profiles) {
+            List<LauncherActivityInfo> apps = launcherApps.getActivityList(null, profile);
+            for (LauncherActivityInfo app : apps) {
+                String packageName = app.getApplicationInfo().packageName;
+                if (!addedPackages.contains(packageName)) {
+                    String appName = app.getLabel().toString();
+                    launchableApps.add(new Pair<>(packageName, appName));
+                    addedPackages.add(packageName);
+                }
+            }
+        }
+
+        if (launchableApps.isEmpty()) {
             return "No applications found on this device.\n";
         }
 
+        // Sort apps by name
+        Collections.sort(launchableApps, Comparator.comparing(o -> o.second.toLowerCase()));
+
         StringBuilder sb = new StringBuilder();
         sb.append("List of launchable applications (Format: Package Name : Display Name):\n");
-
-        // 애플리케이션 이름을 기준으로 정렬하기 위한 리스트
-        List<Pair<String, String>> launchableApps = new ArrayList<>();
-
-        for (ApplicationInfo appInfo : allInstalledApps) {
-            // 시스템 앱이 아니고, 업데이트된 시스템 앱도 아닌 경우 (즉, 사용자가 설치한 앱)
-            // 또는 시스템 앱이라도 런처 인텐트가 있는 경우 (예: 카메라, 캘린더 등)
-            // 실행 가능한 인텐트가 있는지 확인합니다.
-            Intent launchIntent = pm.getLaunchIntentForPackage(appInfo.packageName);
-            if (launchIntent != null) {
-                // 시스템 앱이 아닌 앱만 포함하거나, 혹은 모든 실행 가능한 앱을 포함할 수 있습니다.
-                // 사용자의 요청은 "시스템 앱 말고 실행가능한 모든 앱" 이므로,
-                // (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) == 0 조건으로 사용자가 설치한 앱만 필터링하거나,
-                // 이 조건을 제거하여 시스템 앱 중에서도 실행 가능한 것들을 포함할 수 있습니다.
-                // 여기서는 일단 모든 실행 가능한 앱 (시스템 앱 포함)을 가져오되,
-                // 사용자가 원하면 아래 조건으로 필터링 가능함을 주석으로 남깁니다.
-
-                /*
-                // 시스템 앱을 제외하고 싶다면 아래 주석을 해제하세요.
-                // (업데이트된 시스템 앱은 사용자가 설치한 앱처럼 취급될 수 있으므로 flags를 주의해서 사용해야 합니다.)
-                if ((appInfo.flags & ApplicationInfo.FLAG_SYSTEM) == 0 || (appInfo.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0) {
-                    // 사용자가 설치했거나 업데이트한 시스템 앱
-                } else if ((appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
-                    // 순수 시스템 앱 (필요시 제외)
-                    // continue; // 이 줄을 활성화하면 순수 시스템 앱은 건너뜁니다.
-                }
-                */
-
-                String packageName = appInfo.packageName;
-                String appName = appInfo.loadLabel(pm).toString();
-                launchableApps.add(new Pair<>(packageName, appName));
-            }
-        }
-
-        // 앱 이름을 기준으로 정렬
-        Collections.sort(launchableApps, new Comparator<Pair<String, String>>() {
-            @Override
-            public int compare(Pair<String, String> o1, Pair<String, String> o2) {
-                return o1.second.compareToIgnoreCase(o2.second);
-            }
-        });
-
         for (Pair<String, String> appEntry : launchableApps) {
             sb.append("- ").append(appEntry.first).append(" : ").append(appEntry.second).append("\n");
         }
 
-        if (launchableApps.isEmpty()){
-            sb.append("No non-system launchable applications found (or filter applied).\n");
-        }
-
-        Log.d("MainActivity", "Total launchable apps found and processed: " + launchableApps.size());
+        Log.d("MainActivity", "Total launchable apps found (LauncherApps): " + launchableApps.size());
         return sb.toString();
     }
 
     @SuppressLint("SetTextI18n")
-    private void startMacro(String recognizedCommand) {
+    private void startMacro(String recognizedCommand, String launchableAppsList) {
         String currentProvider = appPreferences.getAiProvider();
         String apiKey = appPreferences.getApiKeyForCurrentProvider();
 
@@ -281,18 +253,16 @@ public class MainActivity extends AppCompatActivity {
             String providerName = AppPreferences.PROVIDER_OPENAI.equals(currentProvider) ? "OpenAI" : "Gemini";
             textViewResult.setText("API Key for " + providerName + " is not set. Please set it in Settings.");
             Toast.makeText(this, "API Key for " + providerName + " is not set. Please set it in Settings.", Toast.LENGTH_LONG).show();
-            isCapturing = false;
+            MyForegroundService.isMacroRunning = false;
             return;
         }
 
-        // 실행 가능한 앱 목록 가져오기
-        String launchableAppsList = getLaunchableApplicationsListString();
         Log.d("MainActivity", "Launchable apps list: " + launchableAppsList);
         String systemBasePrompt =
                 "You are an intelligent assistant designed to automate tasks on an Android device based on screen layouts and user commands. Your primary goal is to analyze the provided screen layout (in JSON format), the user's intention, and any execution feedback to generate a single, precise action in a specific JSON format.\n\n" +
                         "## Core Instructions:\n" +
                         "1.  **Analyze Thoroughly**: Carefully examine the entire screen layout JSON, the user's command, conversation history, and any `execution_feedback` to understand the context and identify the most appropriate UI element for the action.\n" +
-                        "2.  **User Intent is Paramount**: Your primary goal is to fulfill the user's spoken or typed command. Do NOT interact with UI elements related to controlling the macro itself (e.g., 'Start Macro', 'Stop Macro', 'Record Prompt' buttons that might appear in the application's own UI) unless the user *explicitly* asks to control the macro (e.g., \"Stop the macro now\"). Focus on automating tasks within *other* applications or the Android system as per the user's command.\n" + // 앱 제어 버튼 관련 지침 추가
+                        "2.  **User Intent is Paramount**: Your primary goal is to fulfill the user's spoken or typed command. Do NOT interact with UI elements related to controlling the macro itself (e.g., 'Start Macro', 'Stop Macro', 'Record Prompt' buttons that might appear in the application's own UI) unless the user *explicitly* asks to control the macro (e.g., \"Stop the macro now\"). Focus on automating tasks within *other* applications or the Android system as per the user's command.\n" +
                         "3.  **Coordinate System**: The screen uses a coordinate system where (0,0) is the top-left corner and ("+screenWidth+","+screenHeight+") is the bottom-right corner. All coordinates in your output must adhere to this.\n" +
                         "4.  **Prevent Repetition**: If the current screen layout is identical to the previous one, AND the proposed action is the same as the last action performed on that identical screen (check 'Previous Action Context for Repetition Check'), you MUST output `{\"actions\":[{\"type\":\"gesture\",\"name\":\"back\"}]}` to avoid loops, unless the user's command explicitly requests repetition or `execution_feedback` suggests retrying the same action makes sense. Note: If a click reveals a new menu or dropdown, the screen layout has changed, and this rule may not apply directly; instead, focus on interacting with the new menu.\n" +
                         "5.  **Single Action Output**: Your entire response MUST be a single JSON object. This JSON object must contain an \"actions\" key, which holds an array. This array should contain EXACTLY ONE action dictionary specifying the task to perform.\n" +
@@ -314,17 +284,16 @@ public class MainActivity extends AppCompatActivity {
                         "```json\n" +
                         "{\n" +
                         "    \"actions\": [\n" +
-                        "        // Exactly ONE of the following action dictionaries:\n" +
                         "        {\"type\":\"touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
                         "        {\"type\":\"input\",\"text\":\"STRING_TO_INPUT\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
                         "        {\"type\":\"scroll\",\"direction\":\"up|down|left|right\",\"distance\":INTEGER},\n" +
-                        "        {\"type\":\"long_touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS (e.g., 2000)},\n" +
-                        "        {\"type\":\"drag_and_drop\",\"start\":{\"x\":INTEGER,\"y\":INTEGER},\"end\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS (e.g., 1500)},\n" +
+                        "        {\"type\":\"long_touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS},\n" +
+                        "        {\"type\":\"drag_and_drop\",\"start\":{\"x\":INTEGER,\"y\":INTEGER},\"end\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS},\n" +
                         "        {\"type\":\"double_tap\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}},\n" +
-                        "        {\"type\":\"swipe\",\"start\":{\"x\":INTEGER,\"y\":INTEGER},\"end\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS (e.g., 800)},\n" +
+                        "        {\"type\":\"swipe\",\"start\":{\"x\":INTEGER,\"y\":INTEGER},\"end\":{\"x\":INTEGER,\"y\":INTEGER},\"duration\":MILLISECONDS},\n" +
                         "        {\"type\":\"gesture\",\"name\":\"back|home|recent_apps\"},\n" +
-                        "        {\"type\":\"wait\",\"duration\":MILLISECONDS (YOU CHOOSE, e.g., 1000, 2500, 5000) },\n" +
-                        "        {\"type\":\"open_application\",\"application_name\":\"PACKAGE_NAME_STRING (e.g., com.google.android.gm, refer to 'Available Applications' list above)\"},\n" +
+                        "        {\"type\":\"wait\",\"duration\":MILLISECONDS (e.g., 2500)},\n" +
+                        "        {\"type\":\"open_application\",\"application_name\":\"PACKAGE_NAME_STRING\"},\n" +
                         "        {\"type\":\"done\"}\n" +
                         "    ]\n" +
                         "}\n" +
@@ -347,11 +316,10 @@ public class MainActivity extends AppCompatActivity {
         serviceIntent.putExtra("userCommand", recognizedCommand);
         serviceIntent.putExtra("ai_provider", currentProvider);
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
             startService(serviceIntent);
         }
     }
-
 }
