@@ -125,10 +125,11 @@ public class MainActivity extends AppCompatActivity {
 
         buttonStopMacro.setOnClickListener(v -> {
             if (MyForegroundService.isMacroRunning) {
-                MyForegroundService.instance.stopMacroExecution();
-                Log.d("MainActivity", "Stop Macro button clicked. MyForegroundService.isMacroRunning: " + MyForegroundService.isMacroRunning);
+                // The service will handle its own shutdown process.
                 stopService(new Intent(this, MyForegroundService.class));
-                textViewResult.setText("Macro Stopped");
+                Log.d("MainActivity", "Stop Macro button clicked. Sent stop intent to service.");
+                textViewResult.setText("Macro stop signal sent.");
+                Toast.makeText(this, "Stopping macro...", Toast.LENGTH_SHORT).show();
             } else {
                 Toast.makeText(this, "Macro is not running.", Toast.LENGTH_SHORT).show();
             }
@@ -139,7 +140,17 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         loadAndDisplayApiKeyStatus();
+        updateUiBasedOnServiceState();
     }
+
+    private void updateUiBasedOnServiceState() {
+        if (MyForegroundService.isMacroRunning) {
+            textViewResult.setText("Macro is currently running.");
+        } else {
+            // Check if there's a final message to display or just reset
+        }
+    }
+
     private void loadAndDisplayApiKeyStatus() {
         String currentProvider = appPreferences.getAiProvider();
         String apiKey = appPreferences.getApiKeyForCurrentProvider();

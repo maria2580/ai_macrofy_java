@@ -42,10 +42,14 @@
         <activity
             android:name=".ui.AssistantTriggerActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.NoDisplay"
+            android:theme="@style/Theme.Transparent"
             tools:ignore="Instantiatable">
             <intent-filter>
                 <action android:name="com.example.ai_macrofy.action.EXECUTE_MACRO" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>

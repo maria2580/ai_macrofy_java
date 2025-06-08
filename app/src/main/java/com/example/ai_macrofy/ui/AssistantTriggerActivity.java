@@ -1,10 +1,13 @@
 package com.example.ai_macrofy.ui;
 
+import android.Manifest;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.speech.RecognizerIntent;
 import android.util.Log;
 import android.util.Pair;
 import android.view.WindowManager;
@@ -13,6 +16,7 @@ import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 
 import com.example.ai_macrofy.services.foreground.MyForegroundService;
 import com.example.ai_macrofy.utils.AppPreferences;
@@ -21,12 +25,14 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 public class AssistantTriggerActivity extends AppCompatActivity {
 
     private static final String TAG = "AssistantTriggerActivity";
     public static final String ACTION_EXECUTE_MACRO = "com.example.ai_macrofy.action.EXECUTE_MACRO";
     public static final String EXTRA_USER_COMMAND = "com.example.ai_macrofy.extra.USER_COMMAND";
+    private static final int SPEECH_REQUEST_CODE = 124; // Different from MainActivity's code
 
     private AppPreferences appPreferences;
     private int screenWidth;
@@ -46,27 +52,75 @@ public class AssistantTriggerActivity extends AppCompatActivity {
         appPreferences = new AppPreferences(this);
 
         Intent intent = getIntent();
-        if (intent != null && ACTION_EXECUTE_MACRO.equals(intent.getAction())) {
-            String userCommand = intent.getStringExtra(EXTRA_USER_COMMAND);
-            if (userCommand != null && !userCommand.isEmpty()) {
-                Log.d(TAG, "Received command from Assistant: " + userCommand);
-                // Run heavy work in background to avoid blocking UI thread
-                new Thread(() -> {
-                    String launchableAppsList = getLaunchableApplicationsListString();
-                    runOnUiThread(() -> startMacro(userCommand, launchableAppsList));
-                }).start();
+        if (intent != null) {
+            if (ACTION_EXECUTE_MACRO.equals(intent.getAction())) {
+                String userCommand = intent.getStringExtra(EXTRA_USER_COMMAND);
+                if (userCommand != null && !userCommand.isEmpty()) {
+                    Log.d(TAG, "Received command from existing macro action: " + userCommand);
+                    startMacroWithCommand(userCommand);
+                } else {
+                    Log.e(TAG, "No user command provided in the intent.");
+                    Toast.makeText(this, "Error: No command received.", Toast.LENGTH_SHORT).show();
+                    finish();
+                }
+            } else if (Intent.ACTION_ASSIST.equals(intent.getAction())) {
+                Log.d(TAG, "Triggered by Assistant action. Starting voice recognition.");
+                startSpeechToText();
             } else {
-                Log.e(TAG, "No user command provided in the intent.");
-                Toast.makeText(this, "Error: No command received.", Toast.LENGTH_SHORT).show();
+                Log.e(TAG, "Activity started with an unsupported action: " + intent.getAction());
                 finish();
             }
         } else {
-            Log.e(TAG, "Activity started with incorrect action or null intent.");
-            Toast.makeText(this, "Error: Invalid trigger.", Toast.LENGTH_SHORT).show();
+            Log.e(TAG, "Activity started with a null intent.");
             finish();
         }
-        // Finish is now called after the background task is started or on error
     }
+
+    private void startSpeechToText() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Audio recording permission is required for the assistant feature. Please grant it from the main app.", Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
+        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Listening...");
+        try {
+            startActivityForResult(intent, SPEECH_REQUEST_CODE);
+        } catch (ActivityNotFoundException a) {
+            Toast.makeText(getApplicationContext(), "Speech recognition not supported on this device.", Toast.LENGTH_SHORT).show();
+            finish();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == SPEECH_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
+            ArrayList<String> result = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if (result != null && !result.isEmpty()) {
+                String recognizedText = result.get(0);
+                Log.d(TAG, "Recognized text: " + recognizedText);
+                startMacroWithCommand(recognizedText);
+            } else {
+                Toast.makeText(this, "Could not recognize speech.", Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            // If speech recognition was cancelled or failed, just finish the activity.
+            Log.d(TAG, "Speech recognition cancelled or failed.");
+        }
+        finish();
+    }
+
+    private void startMacroWithCommand(String command) {
+        new Thread(() -> {
+            String launchableAppsList = getLaunchableApplicationsListString();
+            runOnUiThread(() -> startMacro(command, launchableAppsList));
+        }).start();
+    }
+
 
     private String getLaunchableApplicationsListString() {
         PackageManager pm = getPackageManager();
@@ -174,7 +228,6 @@ public class AssistantTriggerActivity extends AppCompatActivity {
             startService(serviceIntent);
         }
 
-        // Finish the invisible activity after starting the service
-        finish();
+        // The activity is finished in onActivityResult or after starting the macro for the EXECUTE_MACRO action
     }
 }

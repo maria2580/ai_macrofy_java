@@ -3,6 +3,7 @@ package com.example.ai_macrofy.services.foreground;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.os.Build;
@@ -40,9 +41,14 @@ public class MyForegroundService extends Service {
     public static volatile MyForegroundService instance;
     private final String CHANNEL_ID = "com.example.ai_macrofy.foreground_channel_v2";
     private final int NOTIFICATION_ID = 1;
+    private static final String ACTION_STOP_MACRO = "com.example.ai_macrofy.ACTION_STOP_MACRO";
+
 
     private final Long instructionInterval = 1000L; // LLM 호출 간 기본 간격
     private final Long actionFailureRetryDelay = 2000L; // 액션 실패 시 재시도 전 대기 시간
+    private static final int MAX_SERVICE_CHECK_ATTEMPTS = 10; // 10 * 500ms = 5 seconds
+    private static final long SERVICE_CHECK_INTERVAL_MS = 500;
+
 
     private Handler mainHandler;
     private Handler timerHandler;
@@ -75,6 +81,14 @@ public class MyForegroundService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d("MyForegroundService", "onStartCommand received");
+
+        if (intent != null && ACTION_STOP_MACRO.equals(intent.getAction())) {
+            Log.d("MyForegroundService", "Stop action received from notification.");
+            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Macro stopped by user.", Toast.LENGTH_SHORT).show());
+            stopMacroExecution();
+            return START_NOT_STICKY;
+        }
+
         if (intent == null) {
             Log.e("MyForegroundService", "Intent is null in onStartCommand, stopping.");
             stopSelfAppropriately();
@@ -120,14 +134,30 @@ public class MyForegroundService extends Service {
             actionHistoryForRepetitionCheck.clear();
             chatHistory.clear(); // 새 매크로 시작 시 대화 기록 초기화
             Log.d("MyForegroundService", "Starting new macro task sequence for provider: " + currentAiProviderName + " with command: " + currentUserCommand);
-            scheduleNextMacroStep(0); // 즉시 첫 단계 실행
+            checkServicesAndStartMacro(0);
         } else {
             Log.d("MyForegroundService", "Macro tasks already running. Settings updated for: " + currentAiProviderName);
-            // 실행 중 설정 변경 시 처리 (예: 현재 작업 중단 후 새 설정으로 재시작)
-            // 여기서는 일단 기존 작업 계속 진행, 다음번 onStartCommand에서 새 명령으로 시작될 것
         }
         return START_STICKY;
     }
+
+    private void checkServicesAndStartMacro(int attempt) {
+        if (LayoutAccessibilityService.instance == null || MacroAccessibilityService.instance == null) {
+            if (attempt < MAX_SERVICE_CHECK_ATTEMPTS) {
+                Log.w("MyForegroundService", "Accessibility services not ready yet. Attempt " + (attempt + 1) + "/" + MAX_SERVICE_CHECK_ATTEMPTS + ". Retrying in " + SERVICE_CHECK_INTERVAL_MS + "ms.");
+                timerHandler.postDelayed(() -> checkServicesAndStartMacro(attempt + 1), SERVICE_CHECK_INTERVAL_MS);
+            } else {
+                Log.e("MyForegroundService", "Accessibility services not available after " + (MAX_SERVICE_CHECK_ATTEMPTS * SERVICE_CHECK_INTERVAL_MS) + "ms. Stopping macro.");
+                mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Accessibility Services not ready. Macro stopped.", Toast.LENGTH_LONG).show());
+                isMacroRunning = false;
+                stopSelfAppropriately();
+            }
+        } else {
+            Log.d("MyForegroundService", "Accessibility services are ready. Starting macro steps.");
+            scheduleNextMacroStep(0); // 즉시 첫 단계 실행
+        }
+    }
+
 
     private void scheduleNextMacroStep(long delayMillis) {
         if (!isMacroRunning) {
@@ -152,9 +182,10 @@ public class MyForegroundService extends Service {
         }
         Log.d("MyForegroundService", "Performing a single macro step with provider: " + currentAiProviderName);
 
-        if (LayoutAccessibilityService.instance == null) {
-            Log.e("MyForegroundService", "LayoutAccessibilityService not available. Stopping macro.");
-            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Layout Accessibility Service not ready. Macro stopped.", Toast.LENGTH_LONG).show());
+        // This check is now mostly a safeguard, as checkServicesAndStartMacro should prevent this state.
+        if (LayoutAccessibilityService.instance == null || MacroAccessibilityService.instance == null) {
+            Log.e("MyForegroundService", "AccessibilityService became unavailable mid-execution. Stopping macro.");
+            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Accessibility Service disconnected unexpectedly. Macro stopped.", Toast.LENGTH_LONG).show());
             isMacroRunning = false;
             stopSelfAppropriately();
             return;
@@ -163,10 +194,7 @@ public class MyForegroundService extends Service {
         final String currentScreenLayoutJson = (layoutData != null) ? layoutData.toString() : "No layout data available";
         final String prevActionContextForRepetitionCheck = actionHistoryForRepetitionCheck.toString();
 
-        // LLM에게 전달할 사용자 명령: 최초 명령을 계속 사용하거나, 동적으로 변경 가능
-        // 여기서는 최초 명령(currentUserCommand)을 계속 사용하는 것으로 가정
-        // 만약 매 스텝마다 사용자 음성 입력을 다시 받는다면 currentUserCommand를 업데이트 해야 함
-        String commandForLlm = currentUserCommand; // 또는 매 스텝 변경되는 명령
+        String commandForLlm = currentUserCommand;
 
         currentAiModelService.generateResponse(
                 currentBaseSystemPrompt,
@@ -183,26 +211,23 @@ public class MyForegroundService extends Service {
 
                         String pureJsonAction = null;
 
-                        // 1. 마크다운 코드 블록 (```json ... ``` 또는 ``` ... ```) 제거 시도
                         String cleanedResponse = rawResponse.trim();
                         if (cleanedResponse.startsWith("```json")) {
-                            cleanedResponse = cleanedResponse.substring(7); // "```json" 제거
+                            cleanedResponse = cleanedResponse.substring(7);
                             if (cleanedResponse.endsWith("```")) {
-                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3); // 끝 "```" 제거
+                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
                             }
                         } else if (cleanedResponse.startsWith("```")) {
-                            cleanedResponse = cleanedResponse.substring(3); // "```" 제거
+                            cleanedResponse = cleanedResponse.substring(3);
                             if (cleanedResponse.endsWith("```")) {
                                 cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
                             }
                         }
-                        cleanedResponse = cleanedResponse.trim(); // 앞뒤 공백 제거
+                        cleanedResponse = cleanedResponse.trim();
 
-                        // 2. 중괄호로 시작하고 끝나는 JSON 객체 찾기 (기존 로직)
-                        //    cleanedResponse에서 JSON을 찾도록 수정
                         String jsonObjectRegexString = "\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}";
                         Pattern pattern = Pattern.compile(jsonObjectRegexString);
-                        Matcher matcher = pattern.matcher(cleanedResponse); // rawResponse 대신 cleanedResponse 사용
+                        Matcher matcher = pattern.matcher(cleanedResponse);
 
                         if (matcher.find()) {
                             pureJsonAction = matcher.group(0);
@@ -217,27 +242,22 @@ public class MyForegroundService extends Service {
                             return;
                         }
 
-                        // ... (userQueryForThisTurn 생성 및 기록 로직은 이전과 유사하게 이어짐)
-                        // userQueryForThisTurn 생성은 commandForLlm, currentScreenLayoutJson, prevActionContextForRepetitionCheck를 사용해야 합니다.
-                        String userQueryForThisTurn = "User Command: " + commandForLlm + "\n" + // commandForLlm 사용
+                        String userQueryForThisTurn = "User Command: " + commandForLlm + "\n" +
                                 "Current Screen Layout JSON:\n" + currentScreenLayoutJson + "\n" +
                                 "Previous Action Context for Repetition Check:\n" + prevActionContextForRepetitionCheck;
 
 
-                        // MacroAccessibilityService로 실행 요청 전, LLM 응답(pureJsonAction) 기록
-                        // 이전에 이 부분이 reportActionCompleted로 옮겨졌거나 명확하지 않았다면 여기서 기록
                         chatHistory.add(new ChatMessage("user", userQueryForThisTurn));
-                        chatHistory.add(new ChatMessage("assistant", pureJsonAction)); // LLM이 생성한 JSON 액션
-                        limitChatHistory(); // chatHistory 크기 제한
+                        chatHistory.add(new ChatMessage("assistant", pureJsonAction));
+                        limitChatHistory();
 
 
-                        // LLM 응답 (액션 JSON)을 MacroAccessibilityService로 전달하여 실행
                         if (MacroAccessibilityService.instance != null) {
                             MacroAccessibilityService.instance.executeActionsFromJson(pureJsonAction);
                         } else {
                             Log.e("MyForegroundService", "MacroAccessibilityService instance is null. Cannot execute actions.");
                             addExecutionFeedbackToHistory("Internal Error: MacroAccessibilityService not available.");
-                            scheduleNextMacroStep(actionFailureRetryDelay); // Macro 서비스 없으면 재시도
+                            scheduleNextMacroStep(actionFailureRetryDelay);
                         }
                     }
 
@@ -252,35 +272,20 @@ public class MyForegroundService extends Service {
                 });
     }
 
-    /**
-     * MacroAccessibilityService로부터 액션 실행 결과를 보고받는 메소드.
-     * @param success 성공 여부
-     * @param feedback 실패 시 이유, 성공 시 null 가능
-     */
     public void reportActionCompleted(boolean success, @Nullable String feedback) {
         if (!isMacroRunning) return;
 
         if (success) {
             Log.d("MyForegroundService", "Action reported as successful.");
-            // 성공 시 다음 LLM 호출 예약 (done 액션이 아닐 경우)
-            // 'done' 액션은 MacroAccessibilityService에서 MyForegroundService.instance.stopMacroExecution()을 호출하여 처리
-            // 또는, LLM이 "done"을 반환했는지 여기서 확인하여 중지
-            // (onSuccess에서 pureJsonAction을 파싱하여 "done"인지 확인하는 로직 추가 가능)
-            // 현재는 MacroAccessibilityService에서 'done' 시 바로 return 하므로,
-            // 이 콜백이 'done'에 대해 호출되지 않거나, 호출되더라도 다음 스텝을 예약하면 안됨.
-            // 'done' 액션이 성공적으로 MacroAccessibilityService에 의해 처리되었다면,
-            // MyForegroundService의 stopMacroExecution()이 호출되어 isMacroRunning = false가 되어야 함.
-            // 따라서 아래 scheduleNextMacroStep은 isMacroRunning이 true일 때만 실행됨.
             scheduleNextMacroStep(instructionInterval);
         } else {
             Log.e("MyForegroundService", "Action reported as failed: " + feedback);
-            if (getApplicationContext() != null) { // Context null check 추가
+            if (getApplicationContext() != null) {
                 mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Action Failed: " + feedback + ". LLM will be informed.", Toast.LENGTH_LONG).show());
             }
             addExecutionFeedbackToHistory(feedback != null ? feedback : "Unknown action execution error.");
-            scheduleNextMacroStep(actionFailureRetryDelay); // 실패 시 잠시 후 LLM 재호출
+            scheduleNextMacroStep(actionFailureRetryDelay);
         }
-        // limitChatHistory(); // addExecutionFeedbackToHistory 내부에서 호출되므로 중복 호출 방지
     }
 
     private void addExecutionFeedbackToHistory(String feedbackText) {
@@ -289,25 +294,24 @@ public class MyForegroundService extends Service {
     }
 
     private void limitChatHistory() {
-        while (chatHistory.size() > 20) { // 최대 10쌍 (user/assistant 또는 user/feedback)
+        while (chatHistory.size() > 20) {
             chatHistory.remove(0);
         }
     }
 
     public void stopMacroExecution() {
-        Log.d("MyForegroundService", "stopMacroExecution called externally (e.g., by 'done' action).");
-        isMacroRunning = false; // 매크로 중지 플래그 설정
+        Log.d("MyForegroundService", "stopMacroExecution called. Stopping service.");
+        isMacroRunning = false;
         stopSelfAppropriately();
     }
 
 
     private void stopSelfAppropriately() {
-        Log.d("MyForegroundService", "stopSelfAppropriately called. isMacroRunning: " + isMacroRunning);
-        // isMacroRunning 플래그를 확인하여 실제 중지 여부 결정 가능
+        Log.d("MyForegroundService", "stopSelfAppropriately called.");
         timerHandler.removeCallbacksAndMessages(null);
         stopForeground(true);
         stopSelf();
-        instance = null; // 명시적으로 null 처리
+        instance = null;
         Log.d("MyForegroundService", "Service instance stopped and nulled.");
     }
 
@@ -316,7 +320,7 @@ public class MyForegroundService extends Service {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     "AI Macrofy Service",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    NotificationManager.IMPORTANCE_LOW // 중요도를 낮춰 소리/진동 최소화
             );
             channel.setDescription("AI Macrofy is running background tasks.");
             NotificationManager manager = getSystemService(NotificationManager.class);
@@ -325,12 +329,25 @@ public class MyForegroundService extends Service {
             }
         }
 
+        // Create an Intent for the stop action
+        Intent stopIntent = new Intent(this, MyForegroundService.class);
+        stopIntent.setAction(ACTION_STOP_MACRO);
+        // FLAG_IMMUTABLE is required for Android 12 (S) and above
+        int pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pendingIntentFlags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        PendingIntent stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, pendingIntentFlags);
+
+
         String providerText = currentAiProviderName != null ? currentAiProviderName : "AI";
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("AI Macrofy Active")
                 .setContentText("Macro running with " + providerText + " provider.")
                 .setSmallIcon(R.drawable.ic_launcher_foreground)
                 .setOngoing(true)
+                // Add the stop action button
+                .addAction(R.drawable.ic_launcher_foreground, "Stop", stopPendingIntent) // Replace with a real stop icon if available
                 .build();
 
         try {
@@ -354,7 +371,7 @@ public class MyForegroundService extends Service {
         if (timerHandler != null) {
             timerHandler.removeCallbacksAndMessages(null);
         }
-        stopForeground(true); // 확실하게 포그라운드 서비스 중지
+        stopForeground(true);
         instance = null;
         super.onDestroy();
         Log.d("MyForegroundService", "MyForegroundService fully destroyed.");
