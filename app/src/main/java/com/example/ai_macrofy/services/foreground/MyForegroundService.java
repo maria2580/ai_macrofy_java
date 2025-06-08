@@ -44,11 +44,11 @@ public class MyForegroundService extends Service {
     private static final String ACTION_STOP_MACRO = "com.example.ai_macrofy.ACTION_STOP_MACRO";
 
 
-    private final Long instructionInterval = 1000L; // LLM 호출 간 기본 간격
-    private final Long actionFailureRetryDelay = 2000L; // 액션 실패 시 재시도 전 대기 시간
+    private final Long instructionInterval = 100L; // LLM 호출 간 기본 간격
+    private final Long actionFailureRetryDelay = 200L; // 액션 실패 시 재시도 전 대기 시간
     private static final int MAX_SERVICE_CHECK_ATTEMPTS = 10; // 10 * 500ms = 5 seconds
     private static final long SERVICE_CHECK_INTERVAL_MS = 500;
-
+    private static final long CHAT_HISTORY_SIZE_LIMIT=100;
 
     private Handler mainHandler;
     private Handler timerHandler;
@@ -294,7 +294,7 @@ public class MyForegroundService extends Service {
     }
 
     private void limitChatHistory() {
-        while (chatHistory.size() > 20) {
+        while (chatHistory.size() > CHAT_HISTORY_SIZE_LIMIT) {
             chatHistory.remove(0);
         }
     }
