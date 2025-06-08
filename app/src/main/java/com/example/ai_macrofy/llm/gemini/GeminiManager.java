@@ -148,16 +148,12 @@ public class GeminiManager implements AiModelService {
                         "Previous Action Context for Repetition Check:\n" + previousActionContext + "\n\n" +
                         "User's Current Command/Question:\n" + processUserCommandForPrompt(currentUserVoiceCommand);
 
-        String processedSystemInstruction = systemInstruction;
-
         // conversationHistory가 비어있고, systemInstruction을 첫 번째 user 메시지에 포함하는 경우
-        boolean systemInstructionPrepended = false;
 
         if (conversationHistory.isEmpty()) {
             List<Part> parts = new ArrayList<>();
             parts.add(new Part(systemInstruction + "\n\n" + currentTurnUserRawContent));
             geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(parts, "user"));
-            systemInstructionPrepended = true;
         } else {
             // 시스템 지침을 대화의 시작 부분에 명시적으로 추가 (Gemini는 system role이 별도로 없을 수 있음)
             // 이 부분은 Gemini API의 최신 권장 사항을 따르는 것이 좋음.
@@ -201,7 +197,7 @@ public class GeminiManager implements AiModelService {
             geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(currentParts, "user"));
         }
 
-        Integer thinkingBudget = 32;
+        Integer thinkingBudget = 256;
         Log.d("GeminiManager", "Final content items for Gemini: " + geminiApiContents.size());
         // Gemini API는 엄격한 user/model 번갈아 나오는 순서를 요구할 수 있음.
         // 위 로직은 system prompt를 첫 user 메시지로 보내고, history를 붙이고, 현재 user 메시지를 붙이는 방식.

@@ -1,10 +1,8 @@
 package com.example.ai_macrofy.services.accessibility;
 
 import android.accessibilityservice.AccessibilityService;
-import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Build;
@@ -16,7 +14,6 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Toast;
-
 import com.example.ai_macrofy.services.foreground.MyForegroundService;
 
 import org.json.JSONArray;
@@ -41,8 +38,8 @@ public class MacroAccessibilityService extends AccessibilityService {
         public void onCompleted(GestureDescription gestureDescription) {
             super.onCompleted(gestureDescription);
             Log.i(TAG, "Gesture COMPLETED for action index: " + (currentActionIndex - 1));
-            // 제스처 완료 후 100ms 딜레이를 주어 UI가 안정될 시간을 줌
-            actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 100);
+            // 제스처 완료 후 200ms 딜레이를 주어 UI가 안정될 시간을 줌
+            actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 200);
         }
 
         @Override
@@ -181,11 +178,12 @@ public class MacroAccessibilityService extends AccessibilityService {
             // 즉시 완료되는 액션들은 여기서 다음 액션을 호출
             case "input":
                 boolean inputSuccess = handleInput(action);
-                if (inputSuccess) actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 500);
+                performSearchAction();
+                if (inputSuccess) actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 200);
                 return inputSuccess;
             case "gesture":
                 boolean gestureSuccess = handleGlobalGesture(action);
-                if (gestureSuccess) actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 500);
+                if (gestureSuccess) actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 200);
                 return gestureSuccess;
             case "wait":
                 actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, action.getLong("duration"));
@@ -203,30 +201,76 @@ public class MacroAccessibilityService extends AccessibilityService {
         }
     }
 
+    private boolean performSearchAction() {
+        // API 30 (Android 11) 이상에서만 동작
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Log.w(TAG, "performImeAction is only available on Android 11+");
+            return false;
+        }
 
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+        if (rootNode == null) {
+            Log.w(TAG, "Root node is null, cannot perform search action.");
+            return false;
+        }
+
+        AccessibilityNodeInfo focusedNode = rootNode.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+
+        if (focusedNode != null && focusedNode.isEditable()) {
+            // --- 수정된 로직 시작 ---
+
+            // 1. 입력 필드가 여러 줄을 지원하는지 확인합니다. (API 21 이상 지원)
+            if (focusedNode.isMultiLine()) {
+                // 2. 여러 줄 입력 필드이면 'Enter'는 줄바꿈이므로 작업을 건너뜁니다.
+                Log.i(TAG, "The input field is multi-line. Skipping IME action to avoid simple newline.");
+                focusedNode.recycle();
+                return false; // 작업을 수행하지 않았으므로 false 반환
+            }
+
+            // --- 수정된 로직 끝 ---
+
+            // 한 줄 입력 필드이므로 'Enter'는 특정 액션(검색, 완료 등)일 가능성이 높습니다.
+            Log.d(TAG, "The input field is single-line. Attempting to perform IME action.");
+
+            boolean success = focusedNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.getId());
+            Log.d(TAG, "performAction(ACTION_IME_ENTER) result: " + success);
+
+            focusedNode.recycle();
+            return success;
+        }
+
+        if (focusedNode != null) {
+            focusedNode.recycle();
+        }
+
+        Log.w(TAG, "No focused editable field found.");
+        return false;
+    }
     private boolean handleTouch(JSONObject action) throws JSONException {
         JSONObject coordinates = action.getJSONObject("coordinates");
         int x = coordinates.getInt("x");
         int y = coordinates.getInt("y");
-
-        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
-        if (rootNode != null) {
-            AccessibilityNodeInfo targetNode = findClickableNodeAtCoordinates(rootNode, x, y);
-            rootNode.recycle();
-            if (targetNode != null) {
-                Log.i(TAG, "Found clickable node. Performing ACTION_CLICK.");
-                boolean success = targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                targetNode.recycle();
-                if (success) {
-                    actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 500);
-                    return true;
-                }
-                Log.w(TAG, "ACTION_CLICK failed. Falling back to gesture.");
-            }
-        }
+//        Long start = System.currentTimeMillis();
+//        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+//        if (rootNode != null) {
+//            AccessibilityNodeInfo targetNode = findClickableNodeAtCoordinates(rootNode, x, y);
+//            rootNode.recycle();
+//            if (targetNode != null) {
+//                Log.i(TAG, "Found clickable node. Performing ACTION_CLICK.");
+//                boolean success = targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+//                targetNode.recycle();
+//                if (success) {
+//                    Long end=System.currentTimeMillis();
+//                    Log.i("time", "handleTouch elapsed: " +(end-start)+"s" );
+//                    actionHandler.sendEmptyMessageDelayed(MSG_EXECUTE_NEXT_ACTION, 200);
+//                    return true;
+//                }
+//                Log.w(TAG, "ACTION_CLICK failed. Falling back to gesture.");
+//            }
+//        }
 
         Log.w(TAG, "No clickable node found or action failed. Using dispatchGesture as fallback.");
-        return performGestureTouch(x, y, 100L);
+        return performGestureTouch(x, y, 200L);
     }
 
     private boolean handleLongTouch(JSONObject action) throws JSONException {
