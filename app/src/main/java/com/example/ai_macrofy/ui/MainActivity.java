@@ -4,7 +4,9 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.ActivityNotFoundException;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.LauncherActivityInfo;
 import android.content.pm.LauncherApps;
@@ -14,6 +16,7 @@ import android.os.Bundle;
 import android.os.UserHandle;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
 import android.view.WindowManager;
@@ -26,6 +29,7 @@ import android.widget.Toast;
 import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -51,6 +55,8 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
     private static final int SPEECH_REQUEST_CODE = 123;
+    private static final int REQUEST_POST_NOTIFICATIONS_PERMISSION = 300;
+
 
     private TextView textViewResult;
     private EditText textViewRecognizedPrompt;
@@ -60,6 +66,7 @@ public class MainActivity extends AppCompatActivity {
     private String currentRecognizedText = "";
     int screenWidth;
     int screenHeight;
+    private AlertDialog activeDialog = null;
 
 
 
@@ -136,11 +143,96 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void checkSequentialSetup() {
+        if (activeDialog != null && activeDialog.isShowing()) {
+            return; // Don't show a new dialog if one is already active
+        }
+        // Chain of checks. If a check fails, it shows a dialog and returns true.
+        if (checkAndShowNotificationDialog()) return;
+        if (checkAndShowAccessibilityDialog()) return;
+        checkAndShowAssistantDialog(); // This is the last, optional check.
+    }
+
+    private boolean checkAndShowNotificationDialog() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                showPermissionDialog(
+                        "설정: 알림 권한",
+                        "매크로 중단을 위한 버튼을 상태바에 제공하기 위해, 알림권한을 허용해주세요",
+                        "허용",
+                        () -> ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_POST_NOTIFICATIONS_PERMISSION)
+                );
+                return true; // Dialog shown
+            }
+        }
+        return false; // No dialog needed
+    }
+
+    private boolean checkAndShowAccessibilityDialog() {
+        if (!isAccessibilityServiceEnabled(LayoutAccessibilityService.class) || !isAccessibilityServiceEnabled(MacroAccessibilityService.class)) {
+            showPermissionDialog(
+                    "설정: 접근성 서비스",
+                    "AI Macrofy는 화면을 보고, 조작하기 위해 접근성 기능을 필요로합니다\n\n다음 화면에서 AI Macrofy를 위한 접근성 서비스를 활성화 해주세요\n\n1. AI Macrofy (Layout)\n2. AI Macrofy (Macro)",
+                    "접근성 설정 이동",
+                    () -> {
+                        Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+                        startActivity(intent);
+                        Toast.makeText(this, "Find and enable both 'AI Macrofy' services.", Toast.LENGTH_LONG).show();
+                    }
+            );
+            return true; // Dialog shown
+        }
+        return false; // No dialog needed
+    }
+
+    private void checkAndShowAssistantDialog() {
+        if (!isThisAppDefaultAssistant()) {
+            showPermissionDialog(
+                    "설정: 보이스 어시스턴트로 설정하기 (Optional)",
+                    "홈버튼이나 전원버튼을 통해 실행되는 assistant 앱을 AI Macrofy로 변경할 수 있습니다.\n\n활성화를 위해 'AI Macrofy'를 기본 어시스턴트 앱으로 설정해주세요.",
+                    "어시스턴트 설정 열기",
+                    () -> {
+                        Intent intent = new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS);
+                        try {
+                            startActivity(intent);
+                            Toast.makeText(this, "Find 'Digital assistant app' and set it to 'AI Macrofy'.", Toast.LENGTH_LONG).show();
+                        } catch (ActivityNotFoundException e) {
+                            Toast.makeText(this, "Could not open default app settings automatically.", Toast.LENGTH_LONG).show();
+                        }
+                    }
+            );
+        }
+    }
+
+    private boolean isThisAppDefaultAssistant() {
+        String assistant = Settings.Secure.getString(getContentResolver(), "assistant");
+        if (TextUtils.isEmpty(assistant)) {
+            return false;
+        }
+        ComponentName assistantComponent = ComponentName.unflattenFromString(assistant);
+        return assistantComponent != null && assistantComponent.getPackageName().equals(getPackageName());
+    }
+
+    private void showPermissionDialog(String title, String message, String positiveButtonText, Runnable onPositiveClick) {
+        if (activeDialog != null && activeDialog.isShowing()) {
+            activeDialog.dismiss();
+        }
+        activeDialog = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton(positiveButtonText, (dialog, which) -> onPositiveClick.run())
+                .setNegativeButton("다음에", (dialog, which) -> dialog.dismiss())
+                .setCancelable(false)
+                .show();
+    }
+
+
     @Override
     protected void onResume() {
         super.onResume();
         loadAndDisplayApiKeyStatus();
         updateUiBasedOnServiceState();
+        checkSequentialSetup();
     }
 
     private void updateUiBasedOnServiceState() {
@@ -187,6 +279,12 @@ public class MainActivity extends AppCompatActivity {
                 startSpeechToText();
             } else {
                 Toast.makeText(this, "Audio recording permission denied.", Toast.LENGTH_SHORT).show();
+            }
+        } else if (requestCode == REQUEST_POST_NOTIFICATIONS_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Notification permission granted!", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Notification permission is recommended for stopping the macro.", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -285,6 +383,7 @@ public class MainActivity extends AppCompatActivity {
                         "    b.  **Re-evaluate Layout**: After any action, especially one that reveals new UI components, carefully re-evaluate the `Current Screen Layout JSON` to understand the new state and available interactive elements.\n" +
                         "    c.  **Default Choices**: If the user's command is general (e.g., just 'Create Account') and a menu of choices appears, and the command doesn't specify which option to pick, try to identify a default or common choice (e.g., 'Personal account'). If no clear default, select the first logical option presented in the new menu. If critically unsure, and other recovery options (like 'back') are not suitable, as a last resort, consider if a `wait` or `done` action is appropriate, or if a specific error feedback has occurred, use that to guide the next step.\n" +
                         "    d.  **Dismissing Unwanted Elements**: If a dropdown, pop-up, or dialog appears that is NOT relevant to the user's current task or command, attempt to dismiss it using a `{\"actions\":[{\"type\":\"gesture\",\"name\":\"back\"}]}` action, or by trying to find a 'close' or 'cancel' button within the new element, or by attempting a touch action outside the bounds of the new element if that's a common way to dismiss it.\n\n" +
+                        "    e.  **search, send by keybored interact when needed**: oftenly, there is no search icon or send button on search ui on many application's ui. then touch the input area, if keyboard availabl, you can use enter(change line) button to trigger of send of search."+
                         "## Action Type Restriction:\n" +
                         "**IMPORTANT: You MUST ONLY use the action types explicitly defined below. No other action types or variations are permitted.** Any deviation from the specified JSON structure and action types will result in an error.\n\n" +
                         "## Available Applications:\n" +

@@ -9,6 +9,8 @@ public class AppPreferences {
     public static final String KEY_AI_PROVIDER = "ai_provider";
     public static final String KEY_OPENAI_API_KEY = "openai_api_key";
     public static final String KEY_GEMINI_API_KEY = "gemini_api_key";
+    // is_first_run KEY_FIRST_RUN is no longer needed
+
 
     public static final String PROVIDER_OPENAI = "openai";
     public static final String PROVIDER_GEMINI = "gemini";
