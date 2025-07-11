@@ -9,6 +9,8 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
+
+
     }
 }
 dependencyResolutionManagement {
@@ -16,8 +18,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        flatDir {
+            dirs 'app/libs'
+        }
     }
 }
-
 rootProject.name = "ai_macrofy_java"
 include ':app'

@@ -26,15 +26,21 @@ android {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
+    aaptOptions {
+        noCompress "task"
+    }
 }
 
 dependencies {
+    //implementation files('libs/android_framework.aar')
 
+    implementation(name: 'android_framework', ext: 'aar')
     implementation libs.appcompat
     implementation libs.material
     implementation libs.activity
     implementation libs.constraintlayout
     implementation libs.firebase.crashlytics.buildtools
+    implementation libs.browser
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core
@@ -47,6 +53,8 @@ dependencies {
     // AndroidX Core for Pair
     implementation libs.core // 또는 Java 프로젝트의 경우 androidx.core:core
 
-
+    // MediaPipe for on-device LLM (Gemma)
+    implementation(libs.tasks.genai)
+    implementation(libs.tasks.vision)
 
 }

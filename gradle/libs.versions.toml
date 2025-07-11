@@ -15,6 +15,10 @@ constraintlayout = "2.2.1"
 retrofit = "2.9.0"
 gson = "2.9.0"
 firebaseCrashlyticsBuildtools = "3.0.3"
+tasksGenai = "0.10.25"
+browser = "1.8.0"
+tasksGenaiVersion = "0.10.25"
+
 
 [libraries]
 common = { module = "com.google.ai.client.generativeai:common", version.ref = "common" }
@@ -33,6 +37,11 @@ retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "retrofit
 retrofit-gson = { module = "com.squareup.retrofit2:converter-gson", version.ref = "gson" }
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 firebase-crashlytics-buildtools = { group = "com.google.firebase", name = "firebase-crashlytics-buildtools", version.ref = "firebaseCrashlyticsBuildtools" } # Or a separate gson version
+browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
+tasks-genai = { module = "com.google.mediapipe:tasks-genai", version = "0.10.25" }
+tasks-vision = { module = "com.google.mediapipe:tasks-vision", version = "0.10.21" }
+
+
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
