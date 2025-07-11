@@ -2,10 +2,9 @@ package com.example.ai_macrofy.llm.gemini.data;
 
 import java.util.List;
 
-// Gemini API의 Content 구조에 해당
-public class Message { // 이름을 ContentRepresentation 또는 GeminiContent 등으로 변경하는 것을 고려
+public class Message {
     private List<Part> parts;
-    private String role; // "user" 또는 "model"
+    private String role; // "user" or "model"
 
     public Message(List<Part> parts, String role) {
         this.parts = parts;
@@ -18,5 +17,16 @@ public class Message { // 이름을 ContentRepresentation 또는 GeminiContent �
 
     public String getRole() {
         return role;
+    }
+
+    // Convenience method to get text from the first part of a response message
+    public String getFirstPartText() {
+        if (parts != null && !parts.isEmpty()) {
+            Part firstPart = parts.get(0);
+            if (firstPart != null) {
+                return firstPart.getText();
+            }
+        }
+        return null;
     }
 }

@@ -20,12 +20,8 @@ public class GeminiResponse {
     public String getFirstCandidateText() {
         if (candidates != null && !candidates.isEmpty()) {
             Choice firstCandidate = candidates.get(0);
-            if (firstCandidate != null && firstCandidate.getContent() != null &&
-                    firstCandidate.getContent().getParts() != null && !firstCandidate.getContent().getParts().isEmpty()) {
-                Part firstPart = firstCandidate.getContent().getParts().get(0);
-                if (firstPart != null) {
-                    return firstPart.getText();
-                }
+            if (firstCandidate != null && firstCandidate.getContent() != null) {
+                return firstCandidate.getContent().getFirstPartText();
             }
         }
         return null;

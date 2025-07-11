@@ -1,12 +1,22 @@
 package com.example.ai_macrofy.llm.gemini.data;
 
-// Gemini API의 Part 구조에 해당
-public class Part {
-    private String text;
-    // 이미지를 다루려면 inline_data 등 다른 필드 추가 가능
+import com.google.gson.annotations.SerializedName;
 
+public class Part {
+    @SerializedName("text")
+    private String text;
+
+    @SerializedName("inline_data")
+    private InlineData inlineData;
+
+    // Constructor for text part
     public Part(String text) {
         this.text = text;
+    }
+
+    // Constructor for image part
+    public Part(InlineData inlineData) {
+        this.inlineData = inlineData;
     }
 
     public String getText() {

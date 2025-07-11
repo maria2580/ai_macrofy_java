@@ -1,19 +1,25 @@
 package com.example.ai_macrofy.llm.gpt.data;
 
+import com.google.gson.annotations.SerializedName;
+import java.util.List;
+
 public class Message {
-    private final String role;
-    private final String content;
+    @SerializedName("role")
+    public String role;
 
-    public Message(String role, String content) {
+    // content can be a simple string or a list of parts for vision
+    @SerializedName("content")
+    public Object content;
+
+    // Constructor for simple text content
+    public Message(String role, String textContent) {
         this.role = role;
-        this.content = content;
+        this.content = textContent;
     }
 
-    public String getRole() {
-        return role;
-    }
-
-    public String getContent() {
-        return content;
+    // Constructor for vision content (list of parts)
+    public Message(String role, List<ContentPart> contentParts) {
+        this.role = role;
+        this.content = contentParts;
     }
 }

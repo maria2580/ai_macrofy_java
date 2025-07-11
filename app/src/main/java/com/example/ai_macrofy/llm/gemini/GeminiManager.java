@@ -1,6 +1,13 @@
 package com.example.ai_macrofy.llm.gemini;
 
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.util.Base64;
 import android.util.Log;
+import android.content.Context;
+import android.os.Environment;
 
 import androidx.annotation.Nullable;
 
@@ -12,16 +19,24 @@ import com.example.ai_macrofy.llm.gemini.data.Choice; //
 import com.example.ai_macrofy.llm.gemini.data.GenerationConfig;
 import com.example.ai_macrofy.llm.gemini.data.GeminiRequest;
 import com.example.ai_macrofy.llm.gemini.data.GeminiResponse;
+import com.example.ai_macrofy.llm.gemini.data.InlineData; // Import InlineData
 import com.example.ai_macrofy.llm.gemini.data.Message; // This is Gemini's Message
 import com.example.ai_macrofy.llm.gemini.data.Part;
 import com.example.ai_macrofy.llm.gemini.data.ThinkingConfig;
+import com.google.gson.Gson;
 
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 
 import retrofit2.Call;
@@ -32,9 +47,11 @@ import retrofit2.converter.gson.GsonConverterFactory;
 public class GeminiManager implements AiModelService {
     private static final String BASE_URL = "https://generativelanguage.googleapis.com/";
     private String apiKeyInstance; // Instance-specific API key
+    private Context context; // For file operations
+    private final Gson gson = new Gson();
 
     // Model name can be made configurable
-    private static final String DEFAULT_MODEL_NAME = "gemini-2.5-flash-preview-05-20"; // Updated to a common model
+    private static final String DEFAULT_MODEL_NAME = "gemini-1.5-flash-latest"; // Updated to the latest model
 
     private static volatile Retrofit retrofitInstanceGemini; // Shared Retrofit
     private GeminiApi apiInstanceInternalGemini; // Instance-specific API service
@@ -65,8 +82,13 @@ public class GeminiManager implements AiModelService {
         this.apiKeyInstance = apiKey;
     }
 
+    @Override
+    public void setContext(Context context) {
+        this.context = context;
+    }
+
     // This internal method now takes the structured list of Gemini Messages
-    private void callGeminiApi(String modelName, List<com.example.ai_macrofy.llm.gemini.data.Message> geminiApiContents, @Nullable Integer thinkingBudget, ModelResponseCallback callback) {
+    private void callGeminiApi(String modelName, Message systemInstruction, List<com.example.ai_macrofy.llm.gemini.data.Message> geminiApiContents, @Nullable Integer thinkingBudget, ModelResponseCallback callback) {
         if (apiKeyInstance == null || apiKeyInstance.isEmpty()) {
             callback.onError("Gemini API key is not set for this instance");
             return;
@@ -82,7 +104,10 @@ public class GeminiManager implements AiModelService {
             generationConfig = new GenerationConfig(thinkingConfig); //
         }
 
-        GeminiRequest request = new GeminiRequest(geminiApiContents, generationConfig); //
+        GeminiRequest request = new GeminiRequest(geminiApiContents, systemInstruction, generationConfig); //
+
+        // 디버깅을 위해 최종 요청 스크립트를 저장합니다.
+        saveFinalScriptForDebug(gson.toJson(request));
 
         Log.d("GeminiManager", "Sending request to Gemini model: " + modelName + " with " + geminiApiContents.size() + " content items."
                 + (generationConfig != null && generationConfig.getThinkingConfig() != null ? " with thinkingBudget: " + generationConfig.getThinkingConfig().getThinkingBudget() : "")); //
@@ -93,29 +118,20 @@ public class GeminiManager implements AiModelService {
                 if (response.isSuccessful() && response.body() != null) {
                     GeminiResponse geminiResponse = response.body(); //
                     String responseText = geminiResponse.getFirstCandidateText(); //
-
-                    if (responseText != null && !responseText.isEmpty()) {
-                        Log.d("GeminiManager", "Gemini onSuccess (Text): " + responseText);
+                    if (responseText != null) {
                         callback.onSuccess(responseText);
                     } else {
-                        Log.w("GeminiManager", "Gemini response successful but no valid text content found. Checking candidates...");
-                        if (geminiResponse.getCandidates() != null && !geminiResponse.getCandidates().isEmpty()) { //
-                            com.example.ai_macrofy.llm.gemini.data.Choice firstCandidate = geminiResponse.getCandidates().get(0); //
-                            Log.w("GeminiManager", "First candidate finishReason: " + firstCandidate.getFinishReason()); //
-                        }
-                        callback.onError("No valid message content in response from Gemini. Possible filtering or empty/non-text response.");
+                        callback.onError("Gemini response was empty or invalid.");
                     }
                 } else {
-                    String errorBodyString = "Unknown error";
-                    if (response.errorBody() != null) {
-                        try {
-                            errorBodyString = response.errorBody().string();
-                        } catch (IOException e) {
-                            Log.e("GeminiManager", "Error reading error body", e);
-                        }
+                    try {
+                        String errorBody = response.errorBody() != null ? response.errorBody().string() : "Unknown error";
+                        Log.e("GeminiManager", "Gemini API call failed: " + response.code() + " - " + errorBody);
+                        callback.onError("Gemini API Error: " + response.code() + " " + errorBody);
+                    } catch (IOException e) {
+                        Log.e("GeminiManager", "Error reading error body", e);
+                        callback.onError("Gemini API Error: " + response.code());
                     }
-                    Log.e("GeminiManager", "Gemini API Error: " + response.message() + " (Code: " + response.code() + ") Body: " + errorBodyString);
-                    callback.onError("Gemini API Error: " + response.message() + " (Code: " + response.code() + ") Body: " + errorBodyString);
                 }
             }
 
@@ -136,72 +152,154 @@ public class GeminiManager implements AiModelService {
     @Override
     public void generateResponse(String systemInstruction,
                                  List<ChatMessage> conversationHistory,
-                                 String currentScreenLayoutJson,
+                                 @Nullable String currentScreenLayoutJson, // Not used
+                                 @Nullable Bitmap currentScreenBitmap, // New bitmap parameter
+                                 @Nullable String currentScreenText, // New text parameter
                                  String currentUserVoiceCommand,
-                                 String previousActionContext,
                                  ModelResponseCallback callback) {
 
         List<com.example.ai_macrofy.llm.gemini.data.Message> geminiApiContents = new ArrayList<>();
 
-        String currentTurnUserRawContent =
-                "Current Screen Layout Information:\n" + currentScreenLayoutJson + "\n\n" +
-                        "Previous Action Context for Repetition Check:\n" + previousActionContext + "\n\n" +
-                        "User's Current Command/Question:\n" + processUserCommandForPrompt(currentUserVoiceCommand);
+        // 1. Create the dedicated system instruction message
+        List<Part> systemParts = new ArrayList<>();
+        systemParts.add(new Part(systemInstruction));
+        Message systemMessage = new Message(systemParts, "system"); // Role can be arbitrary here, not sent in JSON
 
-        // conversationHistory가 비어있고, systemInstruction을 첫 번째 user 메시지에 포함하는 경우
+        // 2. Populate conversation history
+        for (com.example.ai_macrofy.llm.common.ChatMessage histMsg : conversationHistory) {
+            List<Part> histParts = new ArrayList<>();
+            String content = histMsg.content;
+            String geminiRole;
 
-        if (conversationHistory.isEmpty()) {
-            List<Part> parts = new ArrayList<>();
-            parts.add(new Part(systemInstruction + "\n\n" + currentTurnUserRawContent));
-            geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(parts, "user"));
-        } else {
-            // 시스템 지침을 대화의 시작 부분에 명시적으로 추가 (Gemini는 system role이 별도로 없을 수 있음)
-            // 이 부분은 Gemini API의 최신 권장 사항을 따르는 것이 좋음.
-            // 일반적으로 system prompt는 첫 번째 user 메시지에 포함되거나,
-            // API가 지원하는 경우 별도의 system_instruction 필드로 전달됩니다.
-            // 여기서는 첫 번째 user 턴에 포함시키는 로직을 유지하되,
-            // history가 있다면, history의 첫 메시지가 user이고, 그것이 system instruction을 포함했다고 가정.
-            // 또는, 매번 system instruction을 user 메시지 앞에 붙여서 보낼 수도 있지만, 토큰 낭비가 될 수 있음.
-            // 가장 안전한 방법은 systemInstruction을 conversationHistory에는 포함하지 않고,
-            // 여기서 API 요청을 만들 때 항상 conversationHistory 앞에 추가하는 것.
-
-            // 여기서는 conversationHistory에 execution_feedback을 "user" 역할로 변환하여 추가
-            List<Part> systemParts = new ArrayList<>();
-            systemParts.add(new Part(systemInstruction)); // 시스템 지침은 항상 먼저
-            geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(systemParts, "user"));
-            // 모델이 응답하도록 빈 모델 메시지 추가 (옵션, API 동작에 따라)
-            // List<Part> emptyModelParts = new ArrayList<>();
-            // emptyModelParts.add(new Part("")); // 또는 응답을 기다린다는 표시
-            // geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(emptyModelParts, "model"));
-
-
-            for (com.example.ai_macrofy.llm.common.ChatMessage histMsg : conversationHistory) {
-                List<Part> histParts = new ArrayList<>();
-                String content = histMsg.content;
-                String geminiRole;
-
-                if ("execution_feedback".equals(histMsg.role)) {
-                    // Gemini는 'execution_feedback' 역할을 직접 지원하지 않음.
-                    // 이를 'user' 메시지로 보내고, 내용은 명시적으로 피드백임을 알림.
-                    geminiRole = "user";
-                    content = "System Execution Feedback:\n" + histMsg.content;
-                } else {
-                    geminiRole = "assistant".equals(histMsg.role) ? "model" : "user";
-                }
-                histParts.add(new Part(content));
-                geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(histParts, geminiRole));
+            if ("execution_feedback".equals(histMsg.role)) {
+                geminiRole = "user";
+                content = "System Execution Feedback:\n" + histMsg.content;
+            } else {
+                geminiRole = "assistant".equals(histMsg.role) ? "model" : "user";
             }
-            // Add current user message
-            List<Part> currentParts = new ArrayList<>();
-            currentParts.add(new Part(currentTurnUserRawContent));
-            geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(currentParts, "user"));
+            histParts.add(new Part(content));
+            geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(histParts, geminiRole));
         }
+
+        // 3. Add the current user turn content with IMAGE and TEXT
+        String currentTurnUserTextContent =
+                "Current Screen Text:\n" + (currentScreenText != null ? currentScreenText : "Not available.") + "\n\n" +
+                "User's Current Command/Question:\n" + processUserCommandForPrompt(currentUserVoiceCommand) + "\n\n" +
+                "Note: The provided image includes a 100x100 pixel grid. Use this grid to determine precise coordinates for your actions.";
+
+        List<Part> currentParts = new ArrayList<>();
+        // Add text part first
+        currentParts.add(new Part(currentTurnUserTextContent));
+
+        // Add image part if available
+        if (currentScreenBitmap != null) {
+            Log.d("GeminiManager", "Drawing grid on screenshot and encoding for Gemini request.");
+
+            // 원본 이미지에 격자 그리기
+            Bitmap bitmapWithGrid = drawGridOnBitmap(currentScreenBitmap);
+
+            // (디버깅용) 격자 이미지를 파일로 저장. 필요 없으면 이 라인을 주석 처리.
+            // saveBitmapForDebug(bitmapWithGrid);
+
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            // 품질을 낮추기 전 격자가 그려진 비트맵을 압축
+            bitmapWithGrid.compress(Bitmap.CompressFormat.JPEG, 85, byteArrayOutputStream);
+            byte[] imageBytes = byteArrayOutputStream.toByteArray();
+            String base64Image = Base64.encodeToString(imageBytes, Base64.NO_WRAP);
+
+            // 수정된 Part 생성 방식 사용
+            InlineData inlineData = new InlineData("image/jpeg", base64Image);
+            Part imagePart = new Part(inlineData);
+            currentParts.add(imagePart);
+        } else {
+            Log.e("GeminiManager", "Bitmap is null, sending request without image.");
+        }
+
+        geminiApiContents.add(new com.example.ai_macrofy.llm.gemini.data.Message(currentParts, "user"));
+
 
         Integer thinkingBudget = 256;
         Log.d("GeminiManager", "Final content items for Gemini: " + geminiApiContents.size());
-        // Gemini API는 엄격한 user/model 번갈아 나오는 순서를 요구할 수 있음.
-        // 위 로직은 system prompt를 첫 user 메시지로 보내고, history를 붙이고, 현재 user 메시지를 붙이는 방식.
-        // 필요시 API 문서에 맞춰 메시지 순서 조정.
-        callGeminiApi(DEFAULT_MODEL_NAME, geminiApiContents, thinkingBudget, callback);
+        callGeminiApi(DEFAULT_MODEL_NAME, systemMessage, geminiApiContents, thinkingBudget, callback);
+    }
+
+    private Bitmap drawGridOnBitmap(Bitmap originalBitmap) {
+        Bitmap mutableBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true);
+        Canvas canvas = new Canvas(mutableBitmap);
+        Paint paint = new Paint();
+        paint.setColor(Color.RED);
+        paint.setStrokeWidth(1);
+        paint.setStyle(Paint.Style.STROKE);
+
+        int width = originalBitmap.getWidth();
+        int height = originalBitmap.getHeight();
+        int step = 100;
+
+        // Draw vertical lines
+        for (int x = step; x < width; x += step) {
+            canvas.drawLine(x, 0, x, height, paint);
+        }
+
+        // Draw horizontal lines
+        for (int y = step; y < height; y += step) {
+            canvas.drawLine(0, y, width, y, paint);
+        }
+
+        return mutableBitmap;
+    }
+
+    /**
+     * 디버깅 목적으로 비트맵을 외부 저장소의 앱 캐시 디렉터리에 저장합니다.
+     * 이 경로는 권한 없이 접근 가능합니다.
+     * @param bitmap 저장할 비트맵
+     */
+    private void saveBitmapForDebug(Bitmap bitmap) {
+        if (context == null) {
+            Log.e("GeminiManager", "Context is null, cannot save debug image.");
+            return;
+        }
+        try {
+            File cacheDir = context.getExternalCacheDir();
+            if (cacheDir == null) {
+                Log.e("GeminiManager", "External cache directory is not available.");
+                return;
+            }
+            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+            String fileName = "debug_grid_" + timeStamp + ".jpg";
+            File file = new File(cacheDir, fileName);
+
+            FileOutputStream out = new FileOutputStream(file);
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
+            out.flush();
+            out.close();
+            Log.d("GeminiManager", "Debug image saved to: " + file.getAbsolutePath());
+        } catch (IOException e) {
+            Log.e("GeminiManager", "Error saving debug image", e);
+        }
+    }
+
+    private void saveFinalScriptForDebug(String script) {
+        if (context == null) {
+            Log.e("GeminiManager", "Context is null, cannot save debug script.");
+            return;
+        }
+        try {
+            File cacheDir = context.getExternalCacheDir();
+            if (cacheDir == null) {
+                Log.e("GeminiManager", "External cache directory is not available.");
+                return;
+            }
+            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+            String fileName = "debug_script_gemini_" + timeStamp + ".json";
+            File file = new File(cacheDir, fileName);
+
+            FileOutputStream out = new FileOutputStream(file);
+            out.write(script.getBytes());
+            out.flush();
+            out.close();
+            Log.d("GeminiManager", "Debug script saved to: " + file.getAbsolutePath());
+        } catch (IOException e) {
+            Log.e("GeminiManager", "Error saving debug script", e);
+        }
     }
 }

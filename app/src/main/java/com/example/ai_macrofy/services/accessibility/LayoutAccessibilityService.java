@@ -2,7 +2,6 @@ package com.example.ai_macrofy.services.accessibility;
 
 import android.accessibilityservice.AccessibilityService;
 import android.graphics.Rect;
-import android.os.Build;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -184,7 +183,7 @@ public class LayoutAccessibilityService extends AccessibilityService {
         JSONObject test = new JSONObject();
 
         test.put("id", node.getViewIdResourceName() != null ? node.getViewIdResourceName() : "");
-        System.out.println(test);
+        //System.out.println(test);
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo childNode = node.getChild(i);
             if (childNode != null) {
