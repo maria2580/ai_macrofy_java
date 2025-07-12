@@ -85,14 +85,15 @@ public class GemmaManager implements AiModelService {
 
                 LlmInference.LlmInferenceOptions options = LlmInference.LlmInferenceOptions.builder()
                         .setModelPath(modelFile.getAbsolutePath())
-                        .setMaxTokens(4000) // 지원되는 최대 캐시 크기인 4096으로 설정
+                        .setMaxTokens(2000) // 지원되는 최대 캐시 크기인 4096으로 설정
                         .setMaxNumImages(1) // 멀티모달 지원을 위해 이미지 수 설정 (주석 해제)
                         .setPreferredBackend(backend) // setDelegate 대신 setPreferredBackend 사용
                         .build();
                 llmInference = LlmInference.createFromOptions(context, options);
 
-                // 초기화 성공 후, 첫 예비 세션을 준비합니다.
-                Log.d(TAG, "LlmInference initialized. Preparing the first spare session.");
+                // 초기화 성공 후, 첫 예비 세션 준비를 시작합니다.
+                // 이제 이 메서드가 연쇄적으로 큐를 채웁니다.
+                Log.d(TAG, "LlmInference initialized. Kicking off spare session preparation.");
                 prepareSpareSession();
 
                 callback.onInitSuccess();
@@ -105,6 +106,7 @@ public class GemmaManager implements AiModelService {
 
     /**
      * 다음 요청을 위해 백그라운드에서 새로운 LlmInferenceSession을 생성하여 큐에 추가합니다.
+     * 세션 생성 후 큐가 가득 차지 않았다면, 연쇄적으로 다음 세션 생성을 예약합니다.
      */
     private void prepareSpareSession() {
         sessionCreationExecutor.execute(() -> { // 세션 생성 실행기 사용
@@ -114,7 +116,7 @@ public class GemmaManager implements AiModelService {
                 return;
             }
             try {
-                Log.d(TAG, "Started creating a new spare session...");
+                Log.d(TAG, "Started creating a new spare session... Queue capacity remaining: " + spareSessionQueue.remainingCapacity());
                 LlmInferenceSession.LlmInferenceSessionOptions sessionOptions =
                         LlmInferenceSession.LlmInferenceSessionOptions.builder()
                                 .setGraphOptions(GraphOptions.builder().setEnableVisionModality(true).build()) // false를 true로 수정
@@ -122,6 +124,13 @@ public class GemmaManager implements AiModelService {
                 LlmInferenceSession session = LlmInferenceSession.createFromOptions(llmInference, sessionOptions);
                 spareSessionQueue.put(session); // 큐에 공간이 생길 때까지 대기하며 세션을 추가합니다.
                 Log.d(TAG, "New spare session is ready. Queue size: " + spareSessionQueue.size());
+
+                // 세션 추가 후에도 큐에 여유가 있으면 다음 세션 생성을 계속 진행합니다.
+                if (spareSessionQueue.remainingCapacity() > 0) {
+                    Log.d(TAG, "Queue not full yet. Triggering next spare session creation.");
+                    prepareSpareSession();
+                }
+
             } catch (Exception e) {
                 Log.e(TAG, "Failed to create a spare session", e);
             }

@@ -154,8 +154,9 @@ public class AssistantTriggerActivity extends AppCompatActivity {
 
     private void startMacroService() {
         new Thread(() -> {
-            String launchableAppsList = getLaunchableApplicationsListString();
-            runOnUiThread(() -> startMacro(userCommandForMacro, launchableAppsList));
+            // getLaunchableApplicationsListString() is no longer needed here directly.
+            // The list will be generated inside startMacro.
+            runOnUiThread(() -> startMacro(userCommandForMacro));
         }).start();
     }
 
@@ -198,6 +199,54 @@ public class AssistantTriggerActivity extends AppCompatActivity {
         return sb.toString();
     }
 
+    private List<Pair<String, String>> getLaunchableApplications() {
+        LauncherApps launcherApps = (LauncherApps) getSystemService(LAUNCHER_APPS_SERVICE);
+        List<Pair<String, String>> launchableApps = new ArrayList<>();
+        if (launcherApps == null) {
+            return launchableApps;
+        }
+
+        Set<String> addedPackages = new HashSet<>();
+        List<UserHandle> profiles = launcherApps.getProfiles();
+        for (UserHandle profile : profiles) {
+            List<LauncherActivityInfo> apps = launcherApps.getActivityList(null, profile);
+            for (LauncherActivityInfo app : apps) {
+                String packageName = app.getApplicationInfo().packageName;
+                if (!addedPackages.contains(packageName)) {
+                    String appName = app.getLabel().toString();
+                    launchableApps.add(new Pair<>(packageName, appName));
+                    addedPackages.add(packageName);
+                }
+            }
+        }
+        Collections.sort(launchableApps, Comparator.comparing(o -> o.second.toLowerCase()));
+        return launchableApps;
+    }
+
+    private String getFilteredAppsListForPrompt(String command, List<Pair<String, String>> allApps) {
+        List<Pair<String, String>> relevantApps = new ArrayList<>();
+        String lowerCaseCommand = command.toLowerCase();
+
+        for (Pair<String, String> app : allApps) {
+            if (lowerCaseCommand.contains(app.second.toLowerCase())) {
+                relevantApps.add(app);
+            }
+        }
+
+        if (!relevantApps.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("List of relevant applications (Format: Package Name : Display Name):\n");
+            for (Pair<String, String> appEntry : relevantApps) {
+                sb.append("- ").append(appEntry.first).append(" : ").append(appEntry.second).append("\n");
+            }
+            return sb.toString();
+        }
+
+        // If no specific app is mentioned, don't send the full list to save tokens.
+        // The model should infer actions based on the screen content.
+        return "No specific application mentioned in the command. Analyze the screen to perform actions.\n";
+    }
+
     private String getSimplifiedLaunchableApplicationsListString() {
         LauncherApps launcherApps = (LauncherApps) getSystemService(LAUNCHER_APPS_SERVICE);
         if (launcherApps == null) {
@@ -224,7 +273,7 @@ public class AssistantTriggerActivity extends AppCompatActivity {
     }
 
 
-    private void startMacro(String recognizedCommand, String launchableAppsList) {
+    private void startMacro(String recognizedCommand) {
         String currentProvider = appPreferences.getAiProvider();
         String apiKey = appPreferences.getApiKeyForCurrentProvider();
 
@@ -245,42 +294,30 @@ public class AssistantTriggerActivity extends AppCompatActivity {
 
         String finalSystemPrompt;
         String appsListForPrompt;
+        List<Pair<String, String>> allApps = getLaunchableApplications();
 
         if (AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentProvider)) {
-            appsListForPrompt = getSimplifiedLaunchableApplicationsListString();
+            appsListForPrompt = getFilteredAppsListForPrompt(recognizedCommand, allApps);
             finalSystemPrompt =
-                    "You are an Android automation assistant. Your goal is to analyze the screen and user command, then generate a JSON response to perform an action.\n\n" +
-                            "## Primary Directive: Observe, Analyze, Act\n" +
-                            "Your entire response MUST be a single JSON object with the following keys:\n" +
-                            "1.  **`observation`**: List key, visible, clickable UI elements. (e.g., `[\"Login button\", \"Username field\"]`)\n" +
-                            "2.  **`analysis`**: A JSON object containing:\n" +
-                            "    -   **`task_decomposition`**: Describe the overall user goal and break it down into a sequence of necessary steps.\n" +
-                            "    -   **`current_action_definition`**: Define the specific, single action you are taking now to progress the task, based on your decomposition.\n" +
-                            "3.  **`actions`**: Generate an array containing only the single action defined in `current_action_definition`.\n\n" +
-
-                            "## Critical Rules\n" +
-                            "-   **Wait for UI Stability**: After a `scroll` or `touch`, the UI may be loading. Your next action must be a `wait` to ensure the screen is stable. (e.g., `{\"type\":\"wait\",\"duration\":1500}`)\n" +
-                            "-   **Stuck Detection**: If a `scroll` action does not change the screen content (the `observation` is the same), you are stuck. Do NOT scroll in the same direction again. Instead, try scrolling `up` or use a `back` gesture.\n" +
-                            "-   **Task Completion**: When the user's request is complete, use `{\"type\":\"done\"}`.\n" +
-                            "-   **Execution Failures**: If you receive an `execution_feedback` message, do not repeat the failed action. Analyze the screen again and choose a different action.\n\n" +
-
-                            "## JSON Output Format & Action Types\n" +
-                            "Your output MUST be a JSON object. Only use the action types defined below.\n" +
-                            "```json\n" +
-                            "{\n" +
-                            "    \"observation\": \"A list of strings from key visible, clickable elements. Example: [\\\"Profile Picture\\\", \\\"Edit Profile\\\", \\\"Logout\\\"]\",\n" +
-                            "    \"analysis\": {\n" +
-                            "        \"task_decomposition\": \"Briefly describe the overall user goal and the necessary steps.\",\n" +
-                            "        \"current_action_definition\": \"Define the **single** action being performed in this step.\"\n" +
-                            "    },\n" +
-                            "    \"actions\": [\n" +
-                            "        {\"type\":\"touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}}\n" +
-                            "    ]\n" +
-                            "}\n" +
-                            "```\n\n" +
-                            "## Available Applications\n" +
-                            "Use the package name from this list for the `open_application` action.\n" +
-                            appsListForPrompt; // Make sure to append the actual apps list here
+                    "You are an Android automation AI. Your entire response MUST be a single JSON object containing an `actions` array with exactly ONE action object.\n\n" +
+                    "## Core Directives\n" +
+                    "1.  **CRITICAL: SINGLE ACTION ONLY**: The `actions` array MUST contain only ONE action object. Never output multiple actions in the array.\n" +
+                    "2.  **Coordinate System**: The screen is a grid. The top-left corner of the image is `(0,0)` and the bottom-right is `(" + screenWidth + "," + screenHeight + ")`.\n\n" +
+                    "## JSON Response Format\n" +
+                    "Your response must be ONLY a JSON object with a single key: `actions`. Example: `{\"actions\":[{\"type\":\"touch\",\"coordinates\":{\"x\":123,\"y\":456}}]}`\n\n" +
+                    "## Critical Rules\n" +
+                    "- After you perform a `touch` or `scroll`, the next turn's response from you MUST be a `wait` action.\n" +
+                    "- If a `scroll` action fails to change the screen, you are stuck. Try scrolling `up` or use a `back` gesture in the next turn.\n" +
+                    "- When the user's entire request is complete, respond with `{\"actions\":[{\"type\":\"done\"}]}`.\n\n" +
+                    "## Action Types (Choose ONE)\n" +
+                    "- **Touch**: `{\"type\":\"touch\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}}`\n" +
+                    "- **Scroll**: `{\"type\":\"scroll\",\"direction\":\"up|down\",\"coordinates\":{\"x\":INTEGER,\"y\":INTEGER}}`\n" +
+                    "- **Open App**: `{\"type\":\"open_application\",\"application_name\":\"PACKAGE_NAME\"}`\n" +
+                    "- **Gesture**: `{\"type\":\"gesture\",\"name\":\"back|home\"}`\n" +
+                    "- **Wait**: `{\"type\":\"wait\",\"duration\":1500}`\n\n" +
+                    "## Available Applications\n" +
+                    "Use the package name from this list for the `open_application` action.\n" +
+                    appsListForPrompt;
         } else {
             appsListForPrompt = getLaunchableApplicationsListString();
             finalSystemPrompt =
@@ -311,7 +348,7 @@ public class AssistantTriggerActivity extends AppCompatActivity {
                             "9.  **Handling Dynamic UI Changes (Dropdowns, Pop-ups, Menus)**:\n" +
                             "    a.  **Interaction with New Context**: If a `touch` action on an element (e.g., 'Create Account' button) reveals a dropdown menu, pop-up, or a new set of choices (e.g., 'Personal', 'Child Account' as shown in the user-provided image example), your NEXT action (or sequence of actions) should generally be to interact with an element *within* that newly appeared menu/context, based on the user's overall goal. Do NOT try to click the original element (e.g., 'Create Account') again if the new menu is now the primary focus for selection.\n" +
                             "    b.  **Re-evaluate Layout**: After any action, especially one that reveals new UI components, carefully re-evaluate the `Current Screen Layout JSON` to understand the new state and available interactive elements.\n" +
-                            "    c.  **Default Choices**: If the user's command is general (e.g., just 'Create Account') and a menu of choices appears, and the command doesn't specify which option to pick, try to identify a default or common choice (e.g., 'Personal account'). If no clear default, select the first logical option presented in the new menu. If critically unsure, and other recovery options (like 'back') are not suitable, as a last resort, consider if a `wait` or `done` action is appropriate, or if a specific error feedback has occurred, use that to guide the next step.\n" +
+                            "    c.  **Default Choices**: If the user's command is general (e.g., just 'Create Account') and a menu of choices appears, and the command doesn't specify which option to pick, try to identify a default or common choice (e.g., 'Personal account'). If no clear default, select the first logical option presented in the new menu. If critically unsure, and other recovery options (like 'back') are not suitable, consider if a `wait` or `done` action is appropriate, or if a specific error feedback has occurred, use that to guide the next step.\n" +
                             "    d.  **Dismissing Unwanted Elements**: If a dropdown, pop-up, or dialog appears that is NOT relevant to the user's current task or command, attempt to dismiss it using a `{\"actions\":[{\"type\":\"gesture\",\"name\":\"back\"}]}` action, or by trying to find a 'close' or 'cancel' button within the new element, or by attempting a touch action outside the bounds of the new element if that's a common way to dismiss it.\n\n" +
                             "    e.  **search, send by keybored interact when needed**: oftenly, there is no search icon or send button on search ui on many application's ui. then touch the input area, if keyboard availabl, you can use enter(change line) button to trigger of send of search." +
                             "## Action Type Restriction:\n" + // This section header is kept for structure.
