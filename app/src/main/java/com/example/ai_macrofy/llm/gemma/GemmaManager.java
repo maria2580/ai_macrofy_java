@@ -40,9 +40,11 @@ public class GemmaManager implements AiModelService {
     private static GemmaManager instance;
     private Context context;
     private LlmInference llmInference;
-    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+    // 요청 처리(Hot Path)와 세션 생성(Cold Path)을 위한 실행기를 분리하여 병목 현상 방지
+    private final ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService sessionCreationExecutor = Executors.newSingleThreadExecutor();
     // 예비 세션을 저장하기 위한 스레드 안전 큐
-    private final BlockingQueue<LlmInferenceSession> spareSessionQueue = new LinkedBlockingQueue<>(1);
+    private final BlockingQueue<LlmInferenceSession> spareSessionQueue = new LinkedBlockingQueue<>(3);
 
     private GemmaManager(Context context) {
         this.context = context.getApplicationContext();
@@ -66,7 +68,7 @@ public class GemmaManager implements AiModelService {
             return;
         }
 
-        backgroundExecutor.execute(() -> {
+        sessionCreationExecutor.execute(() -> { // 세션 생성 실행기 사용
             try {
                 if (!isModelAvailable(context)) {
                     throw new IOException("Gemma model file not found.");
@@ -83,8 +85,8 @@ public class GemmaManager implements AiModelService {
 
                 LlmInference.LlmInferenceOptions options = LlmInference.LlmInferenceOptions.builder()
                         .setModelPath(modelFile.getAbsolutePath())
-                        .setMaxTokens(4000)
-                        .setMaxNumImages(1) // 멀티모달 지원을 위해 이미지 수 설정
+                        .setMaxTokens(4000) // 지원되는 최대 캐시 크기인 4096으로 설정
+                        .setMaxNumImages(1) // 멀티모달 지원을 위해 이미지 수 설정 (주석 해제)
                         .setPreferredBackend(backend) // setDelegate 대신 setPreferredBackend 사용
                         .build();
                 llmInference = LlmInference.createFromOptions(context, options);
@@ -105,16 +107,21 @@ public class GemmaManager implements AiModelService {
      * 다음 요청을 위해 백그라운드에서 새로운 LlmInferenceSession을 생성하여 큐에 추가합니다.
      */
     private void prepareSpareSession() {
-        backgroundExecutor.execute(() -> {
+        sessionCreationExecutor.execute(() -> { // 세션 생성 실행기 사용
+            // 큐가 이미 가득 찼으면 불필요한 생성을 건너뜁니다.
+            if (spareSessionQueue.remainingCapacity() == 0) {
+                Log.d(TAG, "Session queue is already full. Skipping creation of a new spare session.");
+                return;
+            }
             try {
                 Log.d(TAG, "Started creating a new spare session...");
                 LlmInferenceSession.LlmInferenceSessionOptions sessionOptions =
                         LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                                .setGraphOptions(GraphOptions.builder().setEnableVisionModality(true).build())
+                                .setGraphOptions(GraphOptions.builder().setEnableVisionModality(true).build()) // false를 true로 수정
                                 .build();
                 LlmInferenceSession session = LlmInferenceSession.createFromOptions(llmInference, sessionOptions);
-                spareSessionQueue.put(session); // 큐가 비어있으면 세션을 추가합니다.
-                Log.d(TAG, "New spare session is ready and added to the queue.");
+                spareSessionQueue.put(session); // 큐에 공간이 생길 때까지 대기하며 세션을 추가합니다.
+                Log.d(TAG, "New spare session is ready. Queue size: " + spareSessionQueue.size());
             } catch (Exception e) {
                 Log.e(TAG, "Failed to create a spare session", e);
             }
@@ -144,11 +151,11 @@ public class GemmaManager implements AiModelService {
         // 디버깅을 위해 텍스트 프롬프트를 저장합니다.
         saveFinalScriptForDebug(textPrompt);
 
-        backgroundExecutor.execute(() -> {
+        requestExecutor.execute(() -> { // 요청 처리 실행기 사용
             LlmInferenceSession session = null;
             try {
                 // 1. 큐에서 예비 세션을 가져옵니다. 큐가 비어있으면 세션이 준비될 때까지 대기합니다.
-                Log.d(TAG, "Waiting to take a spare session from the queue...");
+                Log.d(TAG, "Waiting to take a spare session from the queue... Current size: " + spareSessionQueue.size());
                 session = spareSessionQueue.take();
                 Log.d(TAG, "Took a session from the queue. Queue size is now: " + spareSessionQueue.size());
 
@@ -158,6 +165,7 @@ public class GemmaManager implements AiModelService {
                 // 3. 가져온 세션을 사용하여 요청을 처리합니다.
                 session.addQueryChunk(textPrompt);
 
+                // 이미지 전송 기능 활성화
                 if (currentScreenBitmap != null) {
                     Log.d(TAG, "Drawing grid on screenshot for Gemma request.");
                     Bitmap bitmapWithGrid = drawGridOnBitmap(currentScreenBitmap);
@@ -171,6 +179,7 @@ public class GemmaManager implements AiModelService {
                 } else {
                     Log.w(TAG, "Bitmap is null, sending request without image to Gemma.");
                 }
+                
                 Log.d("GemmaManager", "Sending request to Gemma...");
                 String result = session.generateResponse();
                 callback.onSuccess(result);

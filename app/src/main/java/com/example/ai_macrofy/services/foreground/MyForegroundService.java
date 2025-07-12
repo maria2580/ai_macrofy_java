@@ -458,6 +458,22 @@ public class MyForegroundService extends Service {
                             return;
                         }
 
+                        // --- JSON 유효성 검사 및 재시도 로직 추가 ---
+                        try {
+                            // 실제 파싱을 시도하여 JSON이 유효한지 확인합니다.
+                            new JSONObject(pureJsonAction);
+                        } catch (JSONException e) {
+                            Log.e("MyForegroundService", "JSON parsing failed for extracted string: " + e.getMessage());
+                            // 모델에게 수정을 요청하는 피드백을 추가합니다.
+                            String feedback = "JSON parsing failed. The response was not valid JSON. Please correct the format and provide a valid JSON object. Error: " + e.getMessage();
+                            addExecutionFeedbackToHistory(feedback);
+                            // 즉시 다음 스텝을 예약하여 수정된 프롬프트로 재요청합니다.
+                            scheduleNextMacroStep(actionFailureRetryDelay);
+                            return; // 여기서 처리를 중단하고 재시도를 기다립니다.
+                        }
+                        // --- 로직 추가 끝 ---
+
+
                         // For history, we need a text representation of the input
                         String inputContextForHistory;
                         if (bitmap != null) {
