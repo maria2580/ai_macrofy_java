@@ -119,6 +119,7 @@ public class MyForegroundService extends Service {
     private Handler mainThreadHandler;
     private BroadcastReceiver loginSuccessReceiver;
     private WindowManager windowManager;
+    private volatile boolean isWebViewAttached = false;
 
 
     @Override
@@ -203,6 +204,9 @@ public class MyForegroundService extends Service {
     private void attachWebViewToWindow() {
         if (backgroundWebView == null || backgroundWebView.getParent() != null) {
             // 이미 다른 뷰에 연결되어 있거나(예: WebViewActivity) WebView가 준비되지 않은 경우
+            if (backgroundWebView != null && backgroundWebView.getParent() != null) {
+                isWebViewAttached = true; // 이미 붙어있으면 준비된 것으로 간주
+            }
             Log.d("MyForegroundService", "WebView is already attached or null. Skipping attachment to window.");
             return;
         }
@@ -229,9 +233,11 @@ public class MyForegroundService extends Service {
 
         try {
             windowManager.addView(backgroundWebView, params);
+            isWebViewAttached = true; // 성공적으로 추가됨
             Log.d("MyForegroundService", "Attached background WebView to an invisible window.");
         } catch (Exception e) {
             Log.e("MyForegroundService", "Error attaching WebView to window", e);
+            isWebViewAttached = false; // 실패
         }
     }
 
@@ -241,11 +247,17 @@ public class MyForegroundService extends Service {
             // 뷰가 창에 연결되어 있고 부모가 ViewGroup이 아니라면, WindowManager가 관리하는 뷰로 간주합니다.
             try {
                 windowManager.removeView(backgroundWebView);
+                isWebViewAttached = false; // 제거됨
                 Log.d("MyForegroundService", "Removed background WebView from invisible window.");
             } catch (Exception e) {
                 Log.e("MyForegroundService", "Error removing WebView from window", e);
             }
         }
+    }
+
+    // --- 추가: WebView 준비 상태 확인 메서드 ---
+    public boolean isWebViewReady() {
+        return backgroundWebView != null && isWebViewAttached;
     }
 
     // --- 추가: 페이지 로딩 리스너 설정 메서드 ---
@@ -600,45 +612,45 @@ public class MyForegroundService extends Service {
 
                         String pureJsonAction = null;
 
-                        // --- 수정: GeminiWebManager의 일반 텍스트 응답 처리 ---
-                        // 응답이 JSON 형식이 아니면, 웹 UI에서 직접 추출한 텍스트로 간주하고,
-                        // 모델에게 JSON 형식으로 응답하도록 피드백을 보냅니다.
-                        if (AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName) && !rawResponse.trim().startsWith("{")) {
-                            Log.w("MyForegroundService", "Received plain text response from GeminiWebManager. Adding feedback and retrying.");
-                            String feedback = "The previous response was not in the required JSON format. Your response MUST only be a valid JSON object. The invalid response was: " + rawResponse;
-                            addExecutionFeedbackToHistory(feedback);
-                            scheduleNextMacroStep(actionFailureRetryDelay);
-                            return; // 여기서 처리를 중단하고 피드백과 함께 재시도합니다.
-                        } else {
-                            // 기존 JSON 파싱 로직
-                            String cleanedResponse = rawResponse.trim();
-                            if (cleanedResponse.startsWith("```json")) {
-                                cleanedResponse = cleanedResponse.substring(7);
-                                if (cleanedResponse.endsWith("```")) {
-                                    cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
-                                }
-                            } else if (cleanedResponse.startsWith("```")) {
-                                cleanedResponse = cleanedResponse.substring(3);
-                                if (cleanedResponse.endsWith("```")) {
-                                    cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
-                                }
+                        // --- 수정: startsWith() 검사를 제거하고, JSON 파싱을 먼저 시도하도록 로직 변경 ---
+                        // 모든 응답에 대해 JSON 추출 및 파싱을 시도합니다.
+                        String cleanedResponse = rawResponse.trim();
+                        if (cleanedResponse.startsWith("```json")) {
+                            cleanedResponse = cleanedResponse.substring(7);
+                            if (cleanedResponse.endsWith("```")) {
+                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
                             }
-                            cleanedResponse = cleanedResponse.trim();
-
-                            String jsonObjectRegexString = "\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}";
-                            Pattern pattern = Pattern.compile(jsonObjectRegexString);
-                            Matcher matcher = pattern.matcher(cleanedResponse);
-
-                            if (matcher.find()) {
-                                pureJsonAction = matcher.group(0);
-                                Log.d("MyForegroundService", "Extracted JSON: " + pureJsonAction);
+                        } else if (cleanedResponse.startsWith("```")) {
+                            cleanedResponse = cleanedResponse.substring(3);
+                            if (cleanedResponse.endsWith("```")) {
+                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
                             }
+                        }
+                        // Gemini Web UI에서 오는 'JSON' 접두사 제거
+                        if (cleanedResponse.startsWith("JSON")) {
+                            cleanedResponse = cleanedResponse.substring(4);
+                        }
+                        cleanedResponse = cleanedResponse.trim();
+
+                        String jsonObjectRegexString = "\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}";
+                        Pattern pattern = Pattern.compile(jsonObjectRegexString);
+                        Matcher matcher = pattern.matcher(cleanedResponse);
+
+                        if (matcher.find()) {
+                            pureJsonAction = matcher.group(0);
+                            Log.d("MyForegroundService", "Extracted JSON: " + pureJsonAction);
                         }
 
 
                         if (pureJsonAction == null) {
                             Log.e("MyForegroundService", "Could not extract JSON from " + currentAiProviderName + " response after cleaning. Cleaned: " + rawResponse.substring(0, Math.min(rawResponse.length(), 200)));
-                            addExecutionFeedbackToHistory("LLM response parsing failed: Could not extract JSON. Cleaned response (first 200 chars): " + rawResponse.substring(0, Math.min(rawResponse.length(),200)));
+                            // --- 수정: JSON 추출 실패 시, Gemini Web 제공자일 경우 피드백을 보내고 재시도 ---
+                            if (AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName)) {
+                                String feedback = "The previous response was not in the required JSON format. Your response MUST only be a valid JSON object. The invalid response was: " + rawResponse;
+                                addExecutionFeedbackToHistory(feedback);
+                            } else {
+                                addExecutionFeedbackToHistory("LLM response parsing failed: Could not extract JSON. Cleaned response (first 200 chars): " + rawResponse.substring(0, Math.min(rawResponse.length(),200)));
+                            }
                             scheduleNextMacroStep(actionFailureRetryDelay);
                             return;
                         }
@@ -661,7 +673,7 @@ public class MyForegroundService extends Service {
                         } catch (JSONException e) {
                             Log.e("MyForegroundService", "JSON parsing failed for extracted string: " + e.getMessage());
                             // 모델에게 수정을 요청하는 피드백을 추가합니다.
-                            String feedback = "JSON parsing failed. The response was not valid JSON. Please correct the format and provide a valid JSON object. Error: " + e.getMessage();
+                            String feedback = "JSON parsing failed. The response was not valid JSON. Please correct the format and provide a valid JSON object. Error: " + e.getMessage() + ". The invalid response was: " + pureJsonAction;
                             addExecutionFeedbackToHistory(feedback);
                             // 즉시 다음 스텝을 예약하여 수정된 프롬프트로 재요청합니다.
                             scheduleNextMacroStep(actionFailureRetryDelay);
@@ -856,6 +868,7 @@ public class MyForegroundService extends Service {
     public void onDestroy() {
         Log.d("MyForegroundService", "onDestroy called for MyForegroundService.");
         isMacroRunning = false;
+        isWebViewAttached = false; // 서비스 종료 시 플래그 리셋
 
         // 서비스 종료 시 WebView 일시정지
         SharedWebViewManager.onPause();
