@@ -1,16 +1,28 @@
 package com.example.ai_macrofy.services.foreground;
 
+import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap; // Import Bitmap
+import android.graphics.PixelFormat;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
+import android.media.Image;
+import android.media.ImageReader;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.WindowManager;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
@@ -21,10 +33,13 @@ import com.example.ai_macrofy.R;
 import com.example.ai_macrofy.llm.common.AiModelService;
 import com.example.ai_macrofy.llm.common.ChatMessage;
 import com.example.ai_macrofy.llm.common.ModelResponseCallback;
+import com.example.ai_macrofy.llm.gemma.GemmaManager;
+import com.example.ai_macrofy.llm.gemma.InitializationCallback;
 import com.example.ai_macrofy.llm.gpt.GPTManager;
 import com.example.ai_macrofy.llm.gemini.GeminiManager;
 import com.example.ai_macrofy.services.accessibility.LayoutAccessibilityService;
 import com.example.ai_macrofy.services.accessibility.MacroAccessibilityService;
+import com.example.ai_macrofy.ui.PermissionRequestActivity;
 import com.example.ai_macrofy.utils.AppPreferences;
 
 import org.json.JSONArray;
@@ -44,15 +59,17 @@ public class MyForegroundService extends Service {
     private static final String ACTION_STOP_MACRO = "com.example.ai_macrofy.ACTION_STOP_MACRO";
 
 
-    private final Long instructionInterval = 100L; // LLM 호출 간 기본 간격
     private final Long actionFailureRetryDelay = 200L; // 액션 실패 시 재시도 전 대기 시간
     private static final int MAX_SERVICE_CHECK_ATTEMPTS= 10; // 10 * 500ms = 5 seconds
     private static final long SERVICE_CHECK_INTERVAL_MS = 500;
     private static final long CHAT_HISTORY_SIZE_LIMIT=100;
+    private static final long MIN_REQUEST_INTERVAL_MS = 500L; // 0.5초 룰
+    private final Long instructionInterval = 100L; // LLM 호출 간 기본 간격
 
     private Handler mainHandler;
     private Handler timerHandler;
     public static boolean isMacroRunning = false;
+    private long lastRequestTimestamp = 0;
 
     private List<Pair<String, String>> actionHistoryForRepetitionCheck;
     private List<ChatMessage> chatHistory;
@@ -62,8 +79,20 @@ public class MyForegroundService extends Service {
     private String currentUserCommand; // 최초 사용자 명령
     private String currentAiProviderName;
     private AiModelService currentAiModelService;
+    // initialScreenshot and initialScreenText are no longer needed as all flows use MediaProjection
+    // private Bitmap initialScreenshot;
+    // private String initialScreenText;
 
     private AppPreferences appPreferences;
+
+    // MediaProjection related fields
+    private MediaProjectionManager mediaProjectionManager;
+    private MediaProjection mediaProjection;
+    private VirtualDisplay virtualDisplay;
+    private ImageReader imageReader;
+    private int screenWidth;
+    private int screenHeight;
+    private int screenDensity;
 
 
     @Override
@@ -76,6 +105,23 @@ public class MyForegroundService extends Service {
         chatHistory = new ArrayList<>();
         appPreferences = new AppPreferences(this);
         Log.d("MyForegroundService", "onCreate");
+
+        // Get screen metrics
+        WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            screenWidth = windowManager.getCurrentWindowMetrics().getBounds().width();
+            screenHeight = windowManager.getCurrentWindowMetrics().getBounds().height();
+            // Density is needed for MediaProjection
+            DisplayMetrics metrics = new DisplayMetrics();
+            windowManager.getDefaultDisplay().getMetrics(metrics);
+            screenDensity = metrics.densityDpi;
+        } else {
+            DisplayMetrics metrics = new DisplayMetrics();
+            windowManager.getDefaultDisplay().getMetrics(metrics);
+            screenWidth = metrics.widthPixels;
+            screenHeight = metrics.heightPixels;
+            screenDensity = metrics.densityDpi;
+        }
     }
 
     @Override
@@ -95,10 +141,61 @@ public class MyForegroundService extends Service {
             return START_NOT_STICKY;
         }
 
+        // If macro is already running, we ignore new start commands for now.
+        if (isMacroRunning) {
+            Log.w("MyForegroundService", "Macro is already running. Ignoring new start command.");
+            return START_STICKY;
+        }
+
+        // Start the service in the foreground immediately.
+        // This is crucial to satisfy the requirement for MediaProjection.
+        startForegroundNotification();
+
         currentApiKey = intent.getStringExtra("apiKey");
         currentBaseSystemPrompt = intent.getStringExtra("baseSystemPrompt");
         currentUserCommand = intent.getStringExtra("userCommand"); // 최초 사용자 명령 저장
         currentAiProviderName = intent.getStringExtra("ai_provider");
+
+
+        // Check for MediaProjection data
+        if (intent.hasExtra("media_projection_result_code")) {
+            Log.d("MyForegroundService", "Received MediaProjection token.");
+            int resultCode = intent.getIntExtra("media_projection_result_code", 0);
+            Intent resultData;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                resultData = intent.getParcelableExtra("media_projection_result_data", Intent.class);
+            } else {
+                resultData = intent.getParcelableExtra("media_projection_result_data");
+            }
+
+            if (resultCode == Activity.RESULT_OK && resultData != null) {
+                mediaProjectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+                mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, resultData);
+                mediaProjection.registerCallback(new MediaProjection.Callback() {
+                    @Override
+                    public void onStop() {
+                        super.onStop();
+                        Log.w("MyForegroundService", "MediaProjection stopped by user or system.");
+                        if (isMacroRunning) {
+                            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Screen capture was stopped.", Toast.LENGTH_SHORT).show());
+                            stopMacroExecution();
+                        }
+                    }
+                }, mainHandler);
+                // Setup VirtualDisplay and ImageReader right after getting MediaProjection
+                setupVirtualDisplay();
+            } else {
+                Log.e("MyForegroundService", "Invalid MediaProjection data received.");
+                Log.e("MyForegroundService", "MediaProjection token: " + resultCode + ", MediaProjection data: " + resultData);
+                stopSelfAppropriately();
+                return START_NOT_STICKY;
+            }
+        } else {
+            // MediaProjection is now mandatory for starting the service.
+            Log.e("MyForegroundService", "MediaProjection data not found in intent. Stopping service.");
+            stopSelfAppropriately();
+            return START_NOT_STICKY;
+        }
 
         if (currentAiProviderName == null || currentAiProviderName.isEmpty()) {
             currentAiProviderName = appPreferences.getAiProvider();
@@ -110,35 +207,66 @@ public class MyForegroundService extends Service {
         }
 
 
-        if (currentApiKey == null || currentApiKey.isEmpty() ||
-                currentBaseSystemPrompt == null || currentBaseSystemPrompt.isEmpty() ||
-                currentUserCommand == null || currentUserCommand.isEmpty() || // 최초 명령 확인
-                currentAiProviderName == null || currentAiProviderName.isEmpty()) {
-            Log.e("MyForegroundService", "Essential data (API Key, Prompt, User Command, Provider) is missing. Stopping service.");
+        if ((currentApiKey == null || currentApiKey.isEmpty()) && !AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentAiProviderName)) {
+            Log.e("MyForegroundService", "API Key is missing for a remote provider. Stopping service.");
             stopSelfAppropriately();
             return START_NOT_STICKY;
         }
 
+        if (currentBaseSystemPrompt == null || currentBaseSystemPrompt.isEmpty() ||
+                currentUserCommand == null || currentUserCommand.isEmpty() ||
+                currentAiProviderName == null || currentAiProviderName.isEmpty()) {
+            Log.e("MyForegroundService", "Essential data (Prompt, User Command, Provider) is missing. Stopping service.");
+            stopSelfAppropriately();
+            return START_NOT_STICKY;
+        }
+
+        isMacroRunning = true;
+        actionHistoryForRepetitionCheck.clear();
+        chatHistory.clear();
+        updateNotification("Macro starting...");
+        Log.d("MyForegroundService", "Starting new macro task sequence for provider: " + currentAiProviderName + " with command: " + currentUserCommand);
+        initializeAiServiceAndStart();
+
+        return START_STICKY;
+    }
+
+    private void initializeAiServiceAndStart() {
         if (AppPreferences.PROVIDER_GEMINI.equals(currentAiProviderName)) {
             currentAiModelService = new GeminiManager();
-        } else {
-            currentAiModelService = new GPTManager();
-        }
-        currentAiModelService.setApiKey(currentApiKey);
-
-
-        startForegroundNotification();
-
-        if (!isMacroRunning) {
-            isMacroRunning = true;
-            actionHistoryForRepetitionCheck.clear();
-            chatHistory.clear(); // 새 매크로 시작 시 대화 기록 초기화
-            Log.d("MyForegroundService", "Starting new macro task sequence for provider: " + currentAiProviderName + " with command: " + currentUserCommand);
+            currentAiModelService.setApiKey(currentApiKey);
+            currentAiModelService.setContext(this); // Pass context for debug image saving
+            // Gemini is remote, no special initialization needed, proceed directly.
             checkServicesAndStartMacro(0);
-        } else {
-            Log.d("MyForegroundService", "Macro tasks already running. Settings updated for: " + currentAiProviderName);
+        } else if (AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentAiProviderName)) {
+            GemmaManager gemmaManager = GemmaManager.getInstance(this);
+            currentAiModelService = gemmaManager;
+            currentAiModelService.setApiKey(currentApiKey); // Does nothing but good practice
+            currentAiModelService.setContext(this);
+
+            Log.d("MyForegroundService", "Preparing local Gemma model...");
+            gemmaManager.prepare(new InitializationCallback() {
+                @Override
+                public void onInitSuccess() {
+                    Log.d("MyForegroundService", "Gemma model initialized successfully.");
+                    // Now that Gemma is ready, check for accessibility services and start.
+                    checkServicesAndStartMacro(0);
+                }
+
+                @Override
+                public void onInitFailure(String error) {
+                    Log.e("MyForegroundService", "Gemma model initialization failed: " + error);
+                    mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Gemma model failed to load. Stopping macro.", Toast.LENGTH_LONG).show());
+                    stopMacroExecution();
+                }
+            });
+        } else { // OpenAI
+            currentAiModelService = new GPTManager();
+            currentAiModelService.setApiKey(currentApiKey);
+            currentAiModelService.setContext(this);
+            // OpenAI is remote, no special initialization needed, proceed directly.
+            checkServicesAndStartMacro(0);
         }
-        return START_STICKY;
     }
 
     private void checkServicesAndStartMacro(int attempt) {
@@ -165,13 +293,24 @@ public class MyForegroundService extends Service {
             return;
         }
         timerHandler.removeCallbacksAndMessages(null); // 이전 예약된 작업 취소
+
+        long timeSinceLastRequest = System.currentTimeMillis() - lastRequestTimestamp;
+        long remainingTimeForInterval = MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest;
+
+        // 기본 지연 시간과 0.5초 룰에 따른 최소 대기 시간 중 더 긴 시간을 선택합니다.
+        long finalDelay = Math.max(delayMillis, remainingTimeForInterval);
+
+        if (finalDelay > delayMillis) {
+            Log.d("MyForegroundService", "Enforcing 0.5s rule. Additional delay: " + (finalDelay - delayMillis) + "ms");
+        }
+
         timerHandler.postDelayed(() -> {
             if (!isMacroRunning) {
                 Log.d("MyForegroundService", "Macro stopped during delay, not performing step.");
                 return;
             }
             performSingleMacroStep();
-        }, delayMillis);
+        }, finalDelay);
     }
 
     private void performSingleMacroStep() {
@@ -190,18 +329,95 @@ public class MyForegroundService extends Service {
             stopSelfAppropriately();
             return;
         }
-        final JSONObject layoutData = LayoutAccessibilityService.instance.extractLayoutInfo();
-        final String currentScreenLayoutJson = (layoutData != null) ? layoutData.toString() : "No layout data available";
-        final String prevActionContextForRepetitionCheck = actionHistoryForRepetitionCheck.toString();
 
+        // The flow is now unified. Always capture a new screenshot.
+        if (mediaProjection != null && imageReader != null) {
+            captureScreenshotAndContinue();
+        } else {
+            Log.e("MyForegroundService", "No screenshot method available (MediaProjection or ImageReader is null). Stopping macro.");
+            addExecutionFeedbackToHistory("Internal Error: No screenshot method available (MediaProjection not started or ImageReader not ready).");
+            stopMacroExecution();
+        }
+    }
+
+    private void setupVirtualDisplay() {
+        if (mediaProjection == null) {
+            Log.e("MyForegroundService", "setupVirtualDisplay called but mediaProjection is null.");
+            return;
+        }
+        // Close existing ImageReader if it exists
+        if (imageReader != null) {
+            imageReader.close();
+        }
+        // Release existing VirtualDisplay if it exists
+        if (virtualDisplay != null) {
+            virtualDisplay.release();
+        }
+
+        Log.d("MyForegroundService", "Setting up VirtualDisplay and ImageReader.");
+        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2);
+        virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
+                screenWidth, screenHeight, screenDensity,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader.getSurface(), null, null);
+    }
+
+    private void captureScreenshotAndContinue() {
+        Image image = null;
+        Bitmap bitmap = null;
+        try {
+            image = imageReader.acquireLatestImage();
+            if (image != null) {
+                Image.Plane[] planes = image.getPlanes();
+                java.nio.ByteBuffer buffer = planes[0].getBuffer();
+                int pixelStride = planes[0].getPixelStride();
+                int rowStride = planes[0].getRowStride();
+                int rowPadding = rowStride - pixelStride * screenWidth;
+
+                bitmap = Bitmap.createBitmap(screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888);
+                bitmap.copyPixelsFromBuffer(buffer);
+                // Crop the padding
+                bitmap = Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight);
+
+                Log.d("MyForegroundService", "Screenshot captured successfully.");
+
+                String screenText = "Could not get screen layout.";
+                if (LayoutAccessibilityService.instance != null) {
+                    JSONObject layout = LayoutAccessibilityService.instance.extractLayoutInfo();
+                    if (layout != null) {
+                        screenText = layout.toString();
+                    }
+                }
+                sendRequestToModel(null, bitmap, screenText);
+            } else {
+                Log.w("MyForegroundService", "acquireLatestImage() returned null. Retrying.");
+                reportActionCompleted(false, "Failed to capture screenshot: acquireLatestImage() is null.");
+            }
+        } catch (Exception e) {
+            Log.e("MyForegroundService", "Error capturing screenshot", e);
+            reportActionCompleted(false, "Failed to capture screenshot: " + e.getMessage());
+        } finally {
+            if (image != null) {
+                image.close();
+            }
+            // Do NOT release virtualDisplay or close imageReader here, as they are reused.
+        }
+    }
+
+    private void sendRequestToModel(@Nullable String jsonLayout, @Nullable android.graphics.Bitmap bitmap, @Nullable String screenText) {
         String commandForLlm = currentUserCommand;
+
+        // 0.5초 룰: AI 모델에 요청을 보내기 직전에 타임스탬프를 기록합니다.
+        lastRequestTimestamp = System.currentTimeMillis();
+        Log.d("MyForegroundService", "Setting lastRequestTimestamp: " + lastRequestTimestamp);
 
         currentAiModelService.generateResponse(
                 currentBaseSystemPrompt,
                 new ArrayList<>(chatHistory),
-                currentScreenLayoutJson,
-                commandForLlm,
-                prevActionContextForRepetitionCheck,
+                jsonLayout, // No longer used
+                bitmap,     // The screenshot
+                screenText, // The screen text
+                commandForLlm, // previousActionContext is no longer needed
                 new ModelResponseCallback() {
                     @Override
                     public void onSuccess(String rawResponse) {
@@ -242,12 +458,18 @@ public class MyForegroundService extends Service {
                             return;
                         }
 
-                        String userQueryForThisTurn = "User Command: " + commandForLlm + "\n" +
-                                "Current Screen Layout JSON:\n" + currentScreenLayoutJson + "\n" +
-                                "Previous Action Context for Repetition Check:\n" + prevActionContextForRepetitionCheck;
+                        // For history, we need a text representation of the input
+                        String inputContextForHistory;
+                        if (bitmap != null) {
+                            inputContextForHistory = "[SCREENSHOT] + [SCREEN_LAYOUT_JSON] + User Command: " + commandForLlm;
+                        } else {
+                            // This path is less likely now
+                            inputContextForHistory = "User Command: " + commandForLlm + "\n" +
+                                    "Current Screen Layout JSON:\n" + (jsonLayout != null ? jsonLayout : "{}");
+                        }
 
 
-                        chatHistory.add(new ChatMessage("user", userQueryForThisTurn));
+                        chatHistory.add(new ChatMessage("user", inputContextForHistory));
                         chatHistory.add(new ChatMessage("assistant", pureJsonAction));
                         limitChatHistory();
 
@@ -302,6 +524,19 @@ public class MyForegroundService extends Service {
     public void stopMacroExecution() {
         Log.d("MyForegroundService", "stopMacroExecution called. Stopping service.");
         isMacroRunning = false;
+        // Release all resources related to MediaProjection
+        if (virtualDisplay != null) {
+            virtualDisplay.release();
+            virtualDisplay = null;
+        }
+        if (imageReader != null) {
+            imageReader.close();
+            imageReader = null;
+        }
+        if (mediaProjection != null) {
+            mediaProjection.stop();
+            mediaProjection = null;
+        }
         stopSelfAppropriately();
     }
 
@@ -343,7 +578,7 @@ public class MyForegroundService extends Service {
         String providerText = currentAiProviderName != null ? currentAiProviderName : "AI";
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("AI Macrofy Active")
-                .setContentText("Macro running with " + providerText + " provider.")
+                .setContentText("Macro is starting...")
                 .setSmallIcon(R.drawable.ic_launcher_foreground)
                 .setOngoing(true)
                 // Add the stop action button
@@ -352,10 +587,33 @@ public class MyForegroundService extends Service {
 
         try {
             startForeground(NOTIFICATION_ID, notification);
-            Log.d("MyForegroundService", "Service started in foreground with provider: " + providerText);
+            Log.d("MyForegroundService", "Service started in foreground with text: " + "Macro is starting...");
         } catch (Exception e) {
             Log.e("MyForegroundService", "Error starting foreground service: " + e.getMessage(), e);
         }
+    }
+
+    private void updateNotification(String contentText) {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+
+        Intent stopIntent = new Intent(this, MyForegroundService.class);
+        stopIntent.setAction(ACTION_STOP_MACRO);
+        int pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pendingIntentFlags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        PendingIntent stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, pendingIntentFlags);
+
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("AI Macrofy Active")
+                .setContentText(contentText)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setOngoing(true)
+                .addAction(R.drawable.ic_launcher_foreground, "Stop", stopPendingIntent)
+                .build();
+
+        manager.notify(NOTIFICATION_ID, notification);
     }
 
     @Nullable
@@ -370,6 +628,19 @@ public class MyForegroundService extends Service {
         isMacroRunning = false;
         if (timerHandler != null) {
             timerHandler.removeCallbacksAndMessages(null);
+        }
+        // Ensure all resources are released on destruction
+        if (virtualDisplay != null) {
+            virtualDisplay.release();
+            virtualDisplay = null;
+        }
+        if (imageReader != null) {
+            imageReader.close();
+            imageReader = null;
+        }
+        if (mediaProjection != null) {
+            mediaProjection.stop();
+            mediaProjection = null;
         }
         stopForeground(true);
         instance = null;

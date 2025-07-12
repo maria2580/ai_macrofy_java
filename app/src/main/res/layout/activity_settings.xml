@@ -27,7 +27,45 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Google Gemini"/>
+        <RadioButton
+            android:id="@+id/radioButton_gemma_local"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Gemma (local, requires download)"/>
     </RadioGroup>
+
+    <LinearLayout
+        android:id="@+id/layout_gemma_options"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Gemma Delegate"
+            android:textSize="16sp"/>
+
+        <RadioGroup
+            android:id="@+id/radioGroup_gemma_delegate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <RadioButton
+                android:id="@+id/radioButton_gemma_cpu"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="CPU"/>
+            <RadioButton
+                android:id="@+id/radioButton_gemma_gpu"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="GPU"/>
+        </RadioGroup>
+    </LinearLayout>
 
     <EditText
         android:id="@+id/editText_openai_api_key_settings"

@@ -5,15 +5,20 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
+        <!--
+        Exclude the large model files stored in the app's internal file directory
+        from being backed up to the cloud. This prevents excessive data usage and backup failures.
+        Only SharedPreferences will be backed up.
         -->
+        <exclude domain="file" />
+        <include domain="sharedpref" path="."/>
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <!--
+        For device-to-device transfers, we can include the model file
+        so the user doesn't have to re-download it on a new device.
+        -->
+        <include domain="file" />
+        <include domain="sharedpref" path="."/>
     </device-transfer>
-    -->
 </data-extraction-rules>

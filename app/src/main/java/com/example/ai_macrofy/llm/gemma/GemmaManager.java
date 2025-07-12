@@ -13,15 +13,15 @@ import com.example.ai_macrofy.llm.common.AiModelService;
 import com.example.ai_macrofy.llm.common.ChatMessage;
 import com.example.ai_macrofy.llm.common.ModelResponseCallback;
 import com.example.ai_macrofy.services.accessibility.LayoutAccessibilityService;
+import com.example.ai_macrofy.utils.AppPreferences;
 import com.google.mediapipe.framework.image.MPImage;
 import com.google.mediapipe.framework.image.BitmapImageBuilder;
 import com.google.mediapipe.tasks.genai.llminference.LlmInference;
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession;
 import com.google.mediapipe.tasks.genai.llminference.GraphOptions;
-
+import com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend;
 
 import org.json.JSONObject;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -29,8 +29,10 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class GemmaManager implements AiModelService {
     private static final String TAG = "GemmaManager";
@@ -39,6 +41,8 @@ public class GemmaManager implements AiModelService {
     private Context context;
     private LlmInference llmInference;
     private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+    // 예비 세션을 저장하기 위한 스레드 안전 큐
+    private final BlockingQueue<LlmInferenceSession> spareSessionQueue = new LinkedBlockingQueue<>(1);
 
     private GemmaManager(Context context) {
         this.context = context.getApplicationContext();
@@ -68,16 +72,51 @@ public class GemmaManager implements AiModelService {
                     throw new IOException("Gemma model file not found.");
                 }
                 File modelFile = new File(context.getFilesDir(), MODEL_FILENAME);
+
+                AppPreferences appPreferences = new AppPreferences(context);
+                // Delegate 대신 Backend를 사용하여 실행 장치를 설정합니다.
+                Backend backend = AppPreferences.DELEGATE_GPU.equals(appPreferences.getGemmaDelegate())
+                        ? Backend.GPU
+                        : Backend.CPU;
+
+                Log.d(TAG, "Initializing Gemma with backend: " + backend.name());
+
                 LlmInference.LlmInferenceOptions options = LlmInference.LlmInferenceOptions.builder()
                         .setModelPath(modelFile.getAbsolutePath())
-                        .setMaxTokens(4096)
+                        .setMaxTokens(4000)
                         .setMaxNumImages(1) // 멀티모달 지원을 위해 이미지 수 설정
+                        .setPreferredBackend(backend) // setDelegate 대신 setPreferredBackend 사용
                         .build();
                 llmInference = LlmInference.createFromOptions(context, options);
+
+                // 초기화 성공 후, 첫 예비 세션을 준비합니다.
+                Log.d(TAG, "LlmInference initialized. Preparing the first spare session.");
+                prepareSpareSession();
+
                 callback.onInitSuccess();
             } catch (Exception e) {
                 Log.e(TAG, "Failed to initialize LlmInference", e);
                 callback.onInitFailure(e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * 다음 요청을 위해 백그라운드에서 새로운 LlmInferenceSession을 생성하여 큐에 추가합니다.
+     */
+    private void prepareSpareSession() {
+        backgroundExecutor.execute(() -> {
+            try {
+                Log.d(TAG, "Started creating a new spare session...");
+                LlmInferenceSession.LlmInferenceSessionOptions sessionOptions =
+                        LlmInferenceSession.LlmInferenceSessionOptions.builder()
+                                .setGraphOptions(GraphOptions.builder().setEnableVisionModality(true).build())
+                                .build();
+                LlmInferenceSession session = LlmInferenceSession.createFromOptions(llmInference, sessionOptions);
+                spareSessionQueue.put(session); // 큐가 비어있으면 세션을 추가합니다.
+                Log.d(TAG, "New spare session is ready and added to the queue.");
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create a spare session", e);
             }
         });
     }
@@ -106,14 +145,17 @@ public class GemmaManager implements AiModelService {
         saveFinalScriptForDebug(textPrompt);
 
         backgroundExecutor.execute(() -> {
-            LlmInferenceSession.LlmInferenceSessionOptions sessionOptions =
-                    LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                            .setGraphOptions(GraphOptions.builder().setEnableVisionModality(true).build())
-                            .build();
-
             LlmInferenceSession session = null;
             try {
-                session = LlmInferenceSession.createFromOptions(llmInference, sessionOptions);
+                // 1. 큐에서 예비 세션을 가져옵니다. 큐가 비어있으면 세션이 준비될 때까지 대기합니다.
+                Log.d(TAG, "Waiting to take a spare session from the queue...");
+                session = spareSessionQueue.take();
+                Log.d(TAG, "Took a session from the queue. Queue size is now: " + spareSessionQueue.size());
+
+                // 2. 즉시 다음 요청을 위한 예비 세션 생성을 시작합니다.
+                prepareSpareSession();
+
+                // 3. 가져온 세션을 사용하여 요청을 처리합니다.
                 session.addQueryChunk(textPrompt);
 
                 if (currentScreenBitmap != null) {
@@ -129,15 +171,17 @@ public class GemmaManager implements AiModelService {
                 } else {
                     Log.w(TAG, "Bitmap is null, sending request without image to Gemma.");
                 }
-
+                Log.d("GemmaManager", "Sending request to Gemma...");
                 String result = session.generateResponse();
                 callback.onSuccess(result);
             } catch (Exception e) {
                 Log.e(TAG, "Error generating response from Gemma", e);
                 callback.onError(e.getMessage());
             } finally {
+                // 4. 사용이 끝난 세션은 폐기합니다.
                 if (session != null) {
                     session.close();
+                    Log.d(TAG, "Used session has been closed.");
                 }
             }
         });
