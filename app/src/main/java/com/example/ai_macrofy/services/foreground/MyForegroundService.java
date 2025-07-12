@@ -62,7 +62,7 @@ public class MyForegroundService extends Service {
     private final Long actionFailureRetryDelay = 200L; // 액션 실패 시 재시도 전 대기 시간
     private static final int MAX_SERVICE_CHECK_ATTEMPTS= 10; // 10 * 500ms = 5 seconds
     private static final long SERVICE_CHECK_INTERVAL_MS = 500;
-    private static final long CHAT_HISTORY_SIZE_LIMIT=100;
+    private static final int CHAT_HISTORY_SIZE_LIMIT = 10; // 이전 100에서 수정. 대화 기록 크기를 제한하여 프롬프트 길이와 응답 시간을 관리합니다.
     private static final long MIN_REQUEST_INTERVAL_MS = 500L; // 0.5초 룰
     private final Long instructionInterval = 100L; // LLM 호출 간 기본 간격
 
@@ -405,7 +405,9 @@ public class MyForegroundService extends Service {
     }
 
     private void sendRequestToModel(@Nullable String jsonLayout, @Nullable android.graphics.Bitmap bitmap, @Nullable String screenText) {
-        String commandForLlm = currentUserCommand;
+        // 수정: 첫 요청인 경우에만 전체 사용자 명령을 전달하고, 그 이후에는 빈 문자열을 전달합니다.
+        // 이렇게 하면 모델이 이전 행동의 맥락을 기반으로 다음 행동을 추론하게 됩니다.
+        String commandForLlm = chatHistory.isEmpty() ? currentUserCommand : "";
 
         // 0.5초 룰: AI 모델에 요청을 보내기 직전에 타임스탬프를 기록합니다.
         lastRequestTimestamp = System.currentTimeMillis();
@@ -460,8 +462,19 @@ public class MyForegroundService extends Service {
 
                         // --- JSON 유효성 검사 및 재시도 로직 추가 ---
                         try {
-                            // 실제 파싱을 시도하여 JSON이 유효한지 확인합니다.
-                            new JSONObject(pureJsonAction);
+                            JSONObject parsedJson = new JSONObject(pureJsonAction);
+                            // 모델이 {"type":...} 와 같이 actions 배열을 생략하고 내용물만 반환했는지 확인
+                            if (!parsedJson.has("actions") && parsedJson.has("type")) {
+                                Log.w("MyForegroundService", "Response missing 'actions' wrapper. Reconstructing JSON.");
+                                // actions 배열을 만들고 기존 객체를 추가
+                                JSONArray actionsArray = new JSONArray();
+                                actionsArray.put(parsedJson);
+                                // 새로운 JSON 객체를 생성하여 actions 배열을 넣음
+                                JSONObject reconstructedJson = new JSONObject();
+                                reconstructedJson.put("actions", actionsArray);
+                                pureJsonAction = reconstructedJson.toString();
+                                Log.d("MyForegroundService", "Reconstructed JSON: " + pureJsonAction);
+                            }
                         } catch (JSONException e) {
                             Log.e("MyForegroundService", "JSON parsing failed for extracted string: " + e.getMessage());
                             // 모델에게 수정을 요청하는 피드백을 추가합니다.
@@ -477,7 +490,12 @@ public class MyForegroundService extends Service {
                         // For history, we need a text representation of the input
                         String inputContextForHistory;
                         if (bitmap != null) {
-                            inputContextForHistory = "[SCREENSHOT] + [SCREEN_LAYOUT_JSON] + User Command: " + commandForLlm;
+                            // 수정: 첫 요청이 아닐 경우 User Command를 포함하지 않도록 수정합니다.
+                            if (commandForLlm.isEmpty()) {
+                                inputContextForHistory = "[SCREENSHOT]";
+                            } else {
+                                inputContextForHistory = "[SCREENSHOT] + User Command: " + commandForLlm;
+                            }
                         } else {
                             // This path is less likely now
                             inputContextForHistory = "User Command: " + commandForLlm + "\n" +
