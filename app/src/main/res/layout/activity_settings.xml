@@ -26,7 +26,12 @@
             android:id="@+id/radioButton_gemini"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Google Gemini"/>
+            android:text="Google Gemini (API)"/>
+        <RadioButton
+            android:id="@+id/radioButton_gemini_web"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Google Gemini (Web UI, Experimental)"/>
         <RadioButton
             android:id="@+id/radioButton_gemma_local"
             android:layout_width="wrap_content"
@@ -67,21 +72,35 @@
         </RadioGroup>
     </LinearLayout>
 
-    <EditText
-        android:id="@+id/editText_openai_api_key_settings"
+    <LinearLayout
+        android:id="@+id/layout_api_keys"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="OpenAI API Key"
-        android:layout_marginTop="16dp"
-        android:inputType="textPassword"/>
+        android:orientation="vertical">
+        <EditText
+            android:id="@+id/editText_openai_api_key_settings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="OpenAI API Key"
+            android:layout_marginTop="16dp"
+            android:inputType="textPassword"/>
 
-    <EditText
-        android:id="@+id/editText_gemini_api_key_settings"
+        <EditText
+            android:id="@+id/editText_gemini_api_key_settings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Google Gemini API Key"
+            android:layout_marginTop="8dp"
+            android:inputType="textPassword"/>
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/button_gemini_web_logout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="Google Gemini API Key"
-        android:layout_marginTop="8dp"
-        android:inputType="textPassword"/>
+        android:layout_marginTop="16dp"
+        android:text="Logout from Gemini (Web UI)"
+        android:visibility="gone"/>
 
     <Button
         android:id="@+id/button_save_settings"

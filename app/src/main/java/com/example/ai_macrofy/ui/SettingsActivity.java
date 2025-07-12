@@ -1,7 +1,10 @@
 package com.example.ai_macrofy.ui;
 
+import android.content.DialogInterface;
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
+import android.webkit.CookieManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -9,6 +12,7 @@ import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.example.ai_macrofy.R;
@@ -20,14 +24,24 @@ public class SettingsActivity extends AppCompatActivity {
     private RadioButton radioButtonOpenai;
     private RadioButton radioButtonGemini;
     private RadioButton radioButtonGemmaLocal;
+    private RadioButton radioButtonGeminiWeb;
     private EditText editTextOpenaiApiKey;
     private EditText editTextGeminiApiKey;
     private LinearLayout layoutGemmaOptions;
     private RadioGroup radioGroupGemmaDelegate;
     private RadioButton radioButtonGemmaCpu;
     private RadioButton radioButtonGemmaGpu;
+    private LinearLayout layoutApiKeys;
+    private Button buttonGeminiWebLogout;
 
     private AppPreferences appPreferences;
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 다른 화면(WebViewActivity)에서 돌아왔을 때 UI를 갱신하기 위해
+        updateUiForProvider(radioGroupAiProvider.getCheckedRadioButtonId());
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,6 +54,7 @@ public class SettingsActivity extends AppCompatActivity {
         radioButtonOpenai = findViewById(R.id.radioButton_openai);
         radioButtonGemini = findViewById(R.id.radioButton_gemini);
         radioButtonGemmaLocal = findViewById(R.id.radioButton_gemma_local);
+        radioButtonGeminiWeb = findViewById(R.id.radioButton_gemini_web);
         editTextOpenaiApiKey = findViewById(R.id.editText_openai_api_key_settings);
         editTextGeminiApiKey = findViewById(R.id.editText_gemini_api_key_settings);
         Button buttonSaveSettings = findViewById(R.id.button_save_settings);
@@ -47,23 +62,51 @@ public class SettingsActivity extends AppCompatActivity {
         radioGroupGemmaDelegate = findViewById(R.id.radioGroup_gemma_delegate);
         radioButtonGemmaCpu = findViewById(R.id.radioButton_gemma_cpu);
         radioButtonGemmaGpu = findViewById(R.id.radioButton_gemma_gpu);
+        layoutApiKeys = findViewById(R.id.layout_api_keys);
+        buttonGeminiWebLogout = findViewById(R.id.button_gemini_web_logout);
 
         loadSettings();
 
-        radioGroupAiProvider.setOnCheckedChangeListener((group, checkedId) -> updateApiKeyFieldsVisibility(checkedId));
+        radioGroupAiProvider.setOnCheckedChangeListener((group, checkedId) -> updateUiForProvider(checkedId));
         buttonSaveSettings.setOnClickListener(v -> saveSettings());
+        buttonGeminiWebLogout.setOnClickListener(v -> logoutFromGeminiWeb());
     }
 
-    private void updateApiKeyFieldsVisibility(int checkedId) {
+    private void updateUiForProvider(int checkedId) {
+        layoutApiKeys.setVisibility(View.VISIBLE);
+        buttonGeminiWebLogout.setVisibility(View.GONE);
+        layoutGemmaOptions.setVisibility(View.GONE);
+
         if (checkedId == R.id.radioButton_gemma_local) {
-            editTextOpenaiApiKey.setVisibility(View.GONE);
-            editTextGeminiApiKey.setVisibility(View.GONE);
+            layoutApiKeys.setVisibility(View.GONE);
             layoutGemmaOptions.setVisibility(View.VISIBLE);
-        } else {
-            editTextOpenaiApiKey.setVisibility(View.VISIBLE);
-            editTextGeminiApiKey.setVisibility(View.VISIBLE);
-            layoutGemmaOptions.setVisibility(View.GONE);
+        } else if (checkedId == R.id.radioButton_gemini_web) {
+            layoutApiKeys.setVisibility(View.GONE);
+            handleGeminiWebSelection();
         }
+    }
+
+    private void handleGeminiWebSelection() {
+        if (appPreferences.isGeminiWebLoggedIn()) {
+            buttonGeminiWebLogout.setVisibility(View.VISIBLE);
+        } else {
+            new AlertDialog.Builder(this)
+                    .setTitle("Login Required")
+                    .setMessage("Gemini (Web UI) provider requires you to log in first. Would you like to log in now?")
+                    .setPositiveButton("Login", (dialog, which) -> {
+                        startActivity(new Intent(this, WebViewActivity.class));
+                    })
+                    .setNegativeButton("No", null)
+                    .show();
+        }
+    }
+
+    private void logoutFromGeminiWeb() {
+        CookieManager.getInstance().removeAllCookies(null);
+        CookieManager.getInstance().flush();
+        appPreferences.setGeminiWebLoggedIn(false);
+        Toast.makeText(this, "Logged out from Gemini (Web UI).", Toast.LENGTH_SHORT).show();
+        updateUiForProvider(radioGroupAiProvider.getCheckedRadioButtonId());
     }
 
     private void loadSettings() {
@@ -72,6 +115,8 @@ public class SettingsActivity extends AppCompatActivity {
             radioButtonGemini.setChecked(true);
         } else if (AppPreferences.PROVIDER_GEMMA_LOCAL.equals(aiProvider)) {
             radioButtonGemmaLocal.setChecked(true);
+        } else if (AppPreferences.PROVIDER_GEMINI_WEB.equals(aiProvider)) {
+            radioButtonGeminiWeb.setChecked(true);
         } else {
             radioButtonOpenai.setChecked(true);
         }
@@ -84,7 +129,7 @@ public class SettingsActivity extends AppCompatActivity {
             radioButtonGemmaCpu.setChecked(true);
         }
 
-        updateApiKeyFieldsVisibility(radioGroupAiProvider.getCheckedRadioButtonId());
+        updateUiForProvider(radioGroupAiProvider.getCheckedRadioButtonId());
     }
 
     private void saveSettings() {
@@ -94,6 +139,12 @@ public class SettingsActivity extends AppCompatActivity {
             provider = AppPreferences.PROVIDER_GEMINI;
         } else if (selectedId == R.id.radioButton_gemma_local) {
             provider = AppPreferences.PROVIDER_GEMMA_LOCAL;
+        } else if (selectedId == R.id.radioButton_gemini_web) {
+            provider = AppPreferences.PROVIDER_GEMINI_WEB;
+            if (!appPreferences.isGeminiWebLoggedIn()) {
+                Toast.makeText(this, "Login is required to use Gemini (Web UI). Please select it again to log in.", Toast.LENGTH_LONG).show();
+                return;
+            }
         }
         appPreferences.saveAiProvider(provider);
         appPreferences.saveOpenAiApiKey(editTextOpenaiApiKey.getText().toString().trim());

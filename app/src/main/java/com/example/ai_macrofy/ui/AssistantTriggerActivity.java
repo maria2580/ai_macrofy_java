@@ -36,6 +36,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 public class AssistantTriggerActivity extends AppCompatActivity {
@@ -153,43 +154,16 @@ public class AssistantTriggerActivity extends AppCompatActivity {
     }
 
     private void startMacroService() {
-        new Thread(() -> {
-            // getLaunchableApplicationsListString() is no longer needed here directly.
-            // The list will be generated inside startMacro.
-            runOnUiThread(() -> startMacro(userCommandForMacro));
-        }).start();
+        // 이제 앱 목록을 미리 가져올 필요가 없으므로 스레드 제거
+        startMacro(userCommandForMacro);
     }
 
     private String getLaunchableApplicationsListString() {
-        // Use the modern LauncherApps service for an accurate list of apps across profiles
-        LauncherApps launcherApps = (LauncherApps) getSystemService(LAUNCHER_APPS_SERVICE);
-        if (launcherApps == null) {
-            return "Could not access LauncherApps service.\n";
-        }
-
-        List<Pair<String, String>> launchableApps = new ArrayList<>();
-        Set<String> addedPackages = new HashSet<>(); // To avoid duplicates
-
-        // Get apps from all available user profiles (main, work, secure folder, etc.)
-        List<UserHandle> profiles = launcherApps.getProfiles();
-        for (UserHandle profile : profiles) {
-            List<LauncherActivityInfo> apps = launcherApps.getActivityList(null, profile);
-            for (LauncherActivityInfo app : apps) {
-                String packageName = app.getApplicationInfo().packageName;
-                if (!addedPackages.contains(packageName)) {
-                    String appName = app.getLabel().toString();
-                    launchableApps.add(new Pair<>(packageName, appName));
-                    addedPackages.add(packageName);
-                }
-            }
-        }
+        List<Pair<String, String>> launchableApps = getLaunchableApplications();
 
         if (launchableApps.isEmpty()) {
-            return "No applications found on this device.\n";
+            return "App list is not available yet. Please try again in a moment.\n";
         }
-
-        // Sort apps by name
-        Collections.sort(launchableApps, Comparator.comparing(o -> o.second.toLowerCase()));
 
         StringBuilder sb = new StringBuilder();
         sb.append("List of launchable applications (Format: Package Name : Display Name):\n");
@@ -200,25 +174,12 @@ public class AssistantTriggerActivity extends AppCompatActivity {
     }
 
     private List<Pair<String, String>> getLaunchableApplications() {
-        LauncherApps launcherApps = (LauncherApps) getSystemService(LAUNCHER_APPS_SERVICE);
+        Map<String, String> appMap = appPreferences.getAppList();
         List<Pair<String, String>> launchableApps = new ArrayList<>();
-        if (launcherApps == null) {
-            return launchableApps;
+        for (Map.Entry<String, String> entry : appMap.entrySet()) {
+            launchableApps.add(new Pair<>(entry.getKey(), entry.getValue()));
         }
-
-        Set<String> addedPackages = new HashSet<>();
-        List<UserHandle> profiles = launcherApps.getProfiles();
-        for (UserHandle profile : profiles) {
-            List<LauncherActivityInfo> apps = launcherApps.getActivityList(null, profile);
-            for (LauncherActivityInfo app : apps) {
-                String packageName = app.getApplicationInfo().packageName;
-                if (!addedPackages.contains(packageName)) {
-                    String appName = app.getLabel().toString();
-                    launchableApps.add(new Pair<>(packageName, appName));
-                    addedPackages.add(packageName);
-                }
-            }
-        }
+        // 이름순으로 정렬
         Collections.sort(launchableApps, Comparator.comparing(o -> o.second.toLowerCase()));
         return launchableApps;
     }
@@ -277,7 +238,7 @@ public class AssistantTriggerActivity extends AppCompatActivity {
         String currentProvider = appPreferences.getAiProvider();
         String apiKey = appPreferences.getApiKeyForCurrentProvider();
 
-        if (apiKey.isEmpty() && !AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentProvider)) {
+        if (apiKey.isEmpty() && !AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentProvider) && !AppPreferences.PROVIDER_GEMINI_WEB.equals(currentProvider)) {
             String providerName;
             if (AppPreferences.PROVIDER_OPENAI.equals(currentProvider)) {
                 providerName = "OpenAI";

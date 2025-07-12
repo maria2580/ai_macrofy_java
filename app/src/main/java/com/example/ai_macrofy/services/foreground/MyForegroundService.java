@@ -1,13 +1,17 @@
 package com.example.ai_macrofy.services.foreground;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.provider.Settings;
+import android.content.IntentFilter;
 import android.graphics.Bitmap; // Import Bitmap
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
@@ -22,12 +26,19 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.util.Pair;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.example.ai_macrofy.R;
 import com.example.ai_macrofy.llm.common.AiModelService;
@@ -37,10 +48,13 @@ import com.example.ai_macrofy.llm.gemma.GemmaManager;
 import com.example.ai_macrofy.llm.gemma.InitializationCallback;
 import com.example.ai_macrofy.llm.gpt.GPTManager;
 import com.example.ai_macrofy.llm.gemini.GeminiManager;
+import com.example.ai_macrofy.llm.gemini_web.GeminiWebManager;
 import com.example.ai_macrofy.services.accessibility.LayoutAccessibilityService;
 import com.example.ai_macrofy.services.accessibility.MacroAccessibilityService;
 import com.example.ai_macrofy.ui.PermissionRequestActivity;
+import com.example.ai_macrofy.ui.WebViewActivity;
 import com.example.ai_macrofy.utils.AppPreferences;
+import com.example.ai_macrofy.utils.SharedWebViewManager;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -52,6 +66,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MyForegroundService extends Service {
+
+    // --- 추가: 페이지 로딩 리스너 인터페이스 ---
+    public interface PageLoadListener {
+        void onPageFinished(WebView view, String url);
+    }
+    private PageLoadListener pageLoadListener;
 
     public static volatile MyForegroundService instance;
     private final String CHANNEL_ID = "com.example.ai_macrofy.foreground_channel_v2";
@@ -94,6 +114,12 @@ public class MyForegroundService extends Service {
     private int screenHeight;
     private int screenDensity;
 
+    // --- WebView for background automation ---
+    private WebView backgroundWebView; // 이제 공유 WebView를 가리킵니다.
+    private Handler mainThreadHandler;
+    private BroadcastReceiver loginSuccessReceiver;
+    private WindowManager windowManager;
+
 
     @Override
     public void onCreate() {
@@ -104,7 +130,35 @@ public class MyForegroundService extends Service {
         actionHistoryForRepetitionCheck = new ArrayList<>();
         chatHistory = new ArrayList<>();
         appPreferences = new AppPreferences(this);
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         Log.d("MyForegroundService", "onCreate");
+
+        // --- WebView 생성 및 설정 ---
+        mainThreadHandler = new Handler(Looper.getMainLooper());
+        mainThreadHandler.post(() -> {
+            Log.d("MyForegroundService", "Getting shared WebView on main thread.");
+            // SharedWebViewManager에서 WebView 인스턴스를 가져옵니다.
+            backgroundWebView = SharedWebViewManager.getWebView();
+            setupBackgroundWebView();
+            // 백그라운드 작업을 위해 WebView를 보이지 않는 창에 연결
+            attachWebViewToWindow();
+        });
+
+        // --- 로그인 성공 BroadcastReceiver 등록 ---
+        loginSuccessReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (isMacroRunning) {
+                    Log.d("MyForegroundService", "Received ACTION_GEMINI_LOGIN_SUCCESS. Resuming macro step.");
+                    // 이제 WebView 객체 자체가 공유되므로, 쿠키 동기화나 reload가 필요 없습니다.
+                    // 단순히 멈췄던 매크로 단계를 다시 시도합니다.
+                    scheduleNextMacroStep(500); // 약간의 딜레이 후 재시도
+                }
+            }
+        };
+        LocalBroadcastManager.getInstance(this).registerReceiver(
+                loginSuccessReceiver, new IntentFilter(WebViewActivity.ACTION_GEMINI_LOGIN_SUCCESS)
+        );
 
         // Get screen metrics
         WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
@@ -124,9 +178,107 @@ public class MyForegroundService extends Service {
         }
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
+    private void setupBackgroundWebView() {
+        if (backgroundWebView == null) {
+            // 서비스 시작 시점에 WebView가 아직 생성되지 않았을 수 있으므로, 잠시 후 다시 시도합니다.
+            mainThreadHandler.postDelayed(this::setupBackgroundWebView, 100);
+            return;
+        }
+        // WebView 설정은 SharedWebViewManager에서 이미 수행되었으므로, 여기서는 WebViewClient만 설정합니다.
+        backgroundWebView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                Log.d("MyForegroundService", "Background WebView page finished loading: " + url);
+                // --- 추가: 리스너가 있으면 로딩 완료 알림 ---
+                if (pageLoadListener != null) {
+                    pageLoadListener.onPageFinished(view, url);
+                }
+            }
+        });
+    }
+
+    // --- 추가: WebView를 보이지 않는 창에 연결하는 메서드 ---
+    private void attachWebViewToWindow() {
+        if (backgroundWebView == null || backgroundWebView.getParent() != null) {
+            // 이미 다른 뷰에 연결되어 있거나(예: WebViewActivity) WebView가 준비되지 않은 경우
+            Log.d("MyForegroundService", "WebView is already attached or null. Skipping attachment to window.");
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Log.e("MyForegroundService", "Overlay permission not granted. Cannot attach WebView to window.");
+            mainHandler.post(() -> Toast.makeText(this, "Overlay permission needed for background web tasks.", Toast.LENGTH_LONG).show());
+            return;
+        }
+
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                1, 1, // 1x1 픽셀
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
+                        WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                PixelFormat.TRANSPARENT
+        );
+        params.gravity = Gravity.START | Gravity.TOP;
+        params.x = 0;
+        params.y = 0;
+
+        try {
+            windowManager.addView(backgroundWebView, params);
+            Log.d("MyForegroundService", "Attached background WebView to an invisible window.");
+        } catch (Exception e) {
+            Log.e("MyForegroundService", "Error attaching WebView to window", e);
+        }
+    }
+
+    // --- 추가: 보이지 않는 창에서 WebView를 제거하는 메서드 ---
+    private void removeWebViewFromWindow() {
+        if (backgroundWebView != null && backgroundWebView.isAttachedToWindow() && !(backgroundWebView.getParent() instanceof ViewGroup)) {
+            // 뷰가 창에 연결되어 있고 부모가 ViewGroup이 아니라면, WindowManager가 관리하는 뷰로 간주합니다.
+            try {
+                windowManager.removeView(backgroundWebView);
+                Log.d("MyForegroundService", "Removed background WebView from invisible window.");
+            } catch (Exception e) {
+                Log.e("MyForegroundService", "Error removing WebView from window", e);
+            }
+        }
+    }
+
+    // --- 추가: 페이지 로딩 리스너 설정 메서드 ---
+    public void setPageLoadListener(PageLoadListener listener) {
+        this.pageLoadListener = listener;
+    }
+
+    // GeminiWebManager에서 호출할 메서드들
+    public void loadUrlInBackground(String url) {
+        mainThreadHandler.post(() -> {
+            if (backgroundWebView != null) {
+                Log.d("MyForegroundService", "Loading URL in background WebView: " + url);
+                backgroundWebView.loadUrl(url);
+            }
+        });
+    }
+
+    public void evaluateJavascriptInBackground(String script, ValueCallback<String> callback) {
+        mainThreadHandler.post(() -> {
+            if (backgroundWebView != null) {
+                backgroundWebView.evaluateJavascript(script, callback);
+            } else {
+                callback.onReceiveValue(null); // WebView가 없으면 null 반환
+            }
+        });
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d("MyForegroundService", "onStartCommand received");
+
+        // 서비스 시작 시 WebView 활성화
+        SharedWebViewManager.onResume();
 
         if (intent != null && ACTION_STOP_MACRO.equals(intent.getAction())) {
             Log.d("MyForegroundService", "Stop action received from notification.");
@@ -207,7 +359,7 @@ public class MyForegroundService extends Service {
         }
 
 
-        if ((currentApiKey == null || currentApiKey.isEmpty()) && !AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentAiProviderName)) {
+        if ((currentApiKey == null || currentApiKey.isEmpty()) && !AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentAiProviderName) && !AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName)) {
             Log.e("MyForegroundService", "API Key is missing for a remote provider. Stopping service.");
             stopSelfAppropriately();
             return START_NOT_STICKY;
@@ -237,6 +389,12 @@ public class MyForegroundService extends Service {
             currentAiModelService.setApiKey(currentApiKey);
             currentAiModelService.setContext(this); // Pass context for debug image saving
             // Gemini is remote, no special initialization needed, proceed directly.
+            checkServicesAndStartMacro(0);
+        } else if (AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName)) {
+            currentAiModelService = new GeminiWebManager();
+            currentAiModelService.setContext(this);
+            // Web UI automation doesn't need an API key or special initialization.
+            // It will launch its own activity to perform tasks.
             checkServicesAndStartMacro(0);
         } else if (AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentAiProviderName)) {
             GemmaManager gemmaManager = GemmaManager.getInstance(this);
@@ -366,7 +524,20 @@ public class MyForegroundService extends Service {
         Image image = null;
         Bitmap bitmap = null;
         try {
-            image = imageReader.acquireLatestImage();
+            // --- 수정: acquireLatestImage() 실패 시 짧은 재시도 로직 추가 ---
+            for (int i = 0; i < 3; i++) {
+                image = imageReader.acquireLatestImage();
+                if (image != null) {
+                    break;
+                }
+                Log.w("MyForegroundService", "acquireLatestImage() returned null. Retrying... (" + (i + 1) + "/3)");
+                try {
+                    Thread.sleep(100); // 100ms 대기
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
             if (image != null) {
                 Image.Plane[] planes = image.getPlanes();
                 java.nio.ByteBuffer buffer = planes[0].getBuffer();
@@ -390,7 +561,7 @@ public class MyForegroundService extends Service {
                 }
                 sendRequestToModel(null, bitmap, screenText);
             } else {
-                Log.w("MyForegroundService", "acquireLatestImage() returned null. Retrying.");
+                Log.e("MyForegroundService", "acquireLatestImage() returned null after retries. Failing action.");
                 reportActionCompleted(false, "Failed to capture screenshot: acquireLatestImage() is null.");
             }
         } catch (Exception e) {
@@ -429,33 +600,45 @@ public class MyForegroundService extends Service {
 
                         String pureJsonAction = null;
 
-                        String cleanedResponse = rawResponse.trim();
-                        if (cleanedResponse.startsWith("```json")) {
-                            cleanedResponse = cleanedResponse.substring(7);
-                            if (cleanedResponse.endsWith("```")) {
-                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
+                        // --- 수정: GeminiWebManager의 일반 텍스트 응답 처리 ---
+                        // 응답이 JSON 형식이 아니면, 웹 UI에서 직접 추출한 텍스트로 간주하고,
+                        // 모델에게 JSON 형식으로 응답하도록 피드백을 보냅니다.
+                        if (AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName) && !rawResponse.trim().startsWith("{")) {
+                            Log.w("MyForegroundService", "Received plain text response from GeminiWebManager. Adding feedback and retrying.");
+                            String feedback = "The previous response was not in the required JSON format. Your response MUST only be a valid JSON object. The invalid response was: " + rawResponse;
+                            addExecutionFeedbackToHistory(feedback);
+                            scheduleNextMacroStep(actionFailureRetryDelay);
+                            return; // 여기서 처리를 중단하고 피드백과 함께 재시도합니다.
+                        } else {
+                            // 기존 JSON 파싱 로직
+                            String cleanedResponse = rawResponse.trim();
+                            if (cleanedResponse.startsWith("```json")) {
+                                cleanedResponse = cleanedResponse.substring(7);
+                                if (cleanedResponse.endsWith("```")) {
+                                    cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
+                                }
+                            } else if (cleanedResponse.startsWith("```")) {
+                                cleanedResponse = cleanedResponse.substring(3);
+                                if (cleanedResponse.endsWith("```")) {
+                                    cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
+                                }
                             }
-                        } else if (cleanedResponse.startsWith("```")) {
-                            cleanedResponse = cleanedResponse.substring(3);
-                            if (cleanedResponse.endsWith("```")) {
-                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
+                            cleanedResponse = cleanedResponse.trim();
+
+                            String jsonObjectRegexString = "\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}";
+                            Pattern pattern = Pattern.compile(jsonObjectRegexString);
+                            Matcher matcher = pattern.matcher(cleanedResponse);
+
+                            if (matcher.find()) {
+                                pureJsonAction = matcher.group(0);
+                                Log.d("MyForegroundService", "Extracted JSON: " + pureJsonAction);
                             }
-                        }
-                        cleanedResponse = cleanedResponse.trim();
-
-                        String jsonObjectRegexString = "\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}";
-                        Pattern pattern = Pattern.compile(jsonObjectRegexString);
-                        Matcher matcher = pattern.matcher(cleanedResponse);
-
-                        if (matcher.find()) {
-                            pureJsonAction = matcher.group(0);
-                            Log.d("MyForegroundService", "Extracted JSON: " + pureJsonAction);
                         }
 
 
                         if (pureJsonAction == null) {
-                            Log.e("MyForegroundService", "Could not extract JSON from " + currentAiProviderName + " response after cleaning. Cleaned: " + cleanedResponse.substring(0, Math.min(cleanedResponse.length(), 200)));
-                            addExecutionFeedbackToHistory("LLM response parsing failed: Could not extract JSON. Cleaned response (first 200 chars): " + cleanedResponse.substring(0, Math.min(cleanedResponse.length(),200)));
+                            Log.e("MyForegroundService", "Could not extract JSON from " + currentAiProviderName + " response after cleaning. Cleaned: " + rawResponse.substring(0, Math.min(rawResponse.length(), 200)));
+                            addExecutionFeedbackToHistory("LLM response parsing failed: Could not extract JSON. Cleaned response (first 200 chars): " + rawResponse.substring(0, Math.min(rawResponse.length(),200)));
                             scheduleNextMacroStep(actionFailureRetryDelay);
                             return;
                         }
@@ -521,6 +704,19 @@ public class MyForegroundService extends Service {
                     public void onError(String error) {
                         if (!isMacroRunning) return;
                         Log.e("MyForegroundService", currentAiProviderName + " API Error: " + error);
+
+                        // Gemini Web 로그인 필요 에러 처리
+                        if ("LOGIN_REQUIRED".equals(error)) {
+                            Log.d("MyForegroundService", "Login required for Gemini Web. Launching WebViewActivity.");
+                            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Please log in to Google to continue.", Toast.LENGTH_LONG).show());
+                            // Launch the visible WebView for the user to log in.
+                            Intent intent = new Intent(MyForegroundService.this, WebViewActivity.class);
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(intent);
+                            // 여기서 멈추고 브로드캐스트를 기다립니다. 다음 스텝을 예약하지 않습니다.
+                            return;
+                        }
+
                         mainHandler.post(() -> Toast.makeText(getApplicationContext(), currentAiProviderName + " API Error: " + error + ". Retrying.", Toast.LENGTH_LONG).show());
                         addExecutionFeedbackToHistory("LLM API Error: " + error);
                         scheduleNextMacroStep(actionFailureRetryDelay);
@@ -660,9 +856,24 @@ public class MyForegroundService extends Service {
     public void onDestroy() {
         Log.d("MyForegroundService", "onDestroy called for MyForegroundService.");
         isMacroRunning = false;
+
+        // 서비스 종료 시 WebView 일시정지
+        SharedWebViewManager.onPause();
+
         if (timerHandler != null) {
             timerHandler.removeCallbacksAndMessages(null);
         }
+
+        // --- BroadcastReceiver 해제 ---
+        if (loginSuccessReceiver != null) {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(loginSuccessReceiver);
+            loginSuccessReceiver = null;
+        }
+
+        // --- WebView 리소스 해제 (수정) ---
+        // 서비스가 추가했던 보이지 않는 창에서 WebView를 제거합니다.
+        mainThreadHandler.post(this::removeWebViewFromWindow);
+
         // Ensure all resources are released on destruction
         if (virtualDisplay != null) {
             virtualDisplay.release();

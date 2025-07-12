@@ -17,6 +17,7 @@ import android.content.pm.LauncherApps;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.media.projection.MediaProjectionManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -66,6 +67,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
@@ -257,6 +259,8 @@ public class MainActivity extends AppCompatActivity {
         // Chain of checks. If a check fails, it shows a dialog and returns true.
         if (checkAndShowNotificationDialog()) return;
         if (checkAndShowAccessibilityDialog()) return;
+        // --- 추가: 다른 앱 위에 표시 권한 확인 ---
+        if (checkAndShowOverlayPermissionDialog()) return;
         checkAndShowAssistantDialog(); // This is the last, optional check.
     }
 
@@ -271,6 +275,24 @@ public class MainActivity extends AppCompatActivity {
                 );
                 return true; // Dialog shown
             }
+        }
+        return false; // No dialog needed
+    }
+
+    private boolean checkAndShowOverlayPermissionDialog() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            showPermissionDialog(
+                    "설정: 다른 앱 위에 표시 권한",
+                    "백그라운드 웹 작업의 안정성을 위해 '다른 앱 위에 표시' 권한이 필요합니다. 이 권한은 보이지 않는 1픽셀 창을 띄워 웹뷰가 항상 활성화되도록 유지하는 데 사용됩니다.",
+                    "권한 설정으로 이동",
+                    () -> {
+                        Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                        Toast.makeText(this, "AI Macrofy를 찾아 권한을 허용해주세요.", Toast.LENGTH_LONG).show();
+                    }
+            );
+            return true; // Dialog shown
         }
         return false; // No dialog needed
     }
@@ -434,62 +456,23 @@ public class MainActivity extends AppCompatActivity {
         return enabledServicesSetting != null && enabledServicesSetting.toLowerCase().contains(serviceId.toLowerCase());
     }
 
-    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
     private List<Pair<String, String>> getLaunchableApplications() {
-        LauncherApps launcherApps = (LauncherApps) getSystemService(Context.LAUNCHER_APPS_SERVICE);
+        Map<String, String> appMap = appPreferences.getAppList();
         List<Pair<String, String>> launchableApps = new ArrayList<>();
-        if (launcherApps == null) {
-            return launchableApps;
+        for (Map.Entry<String, String> entry : appMap.entrySet()) {
+            launchableApps.add(new Pair<>(entry.getKey(), entry.getValue()));
         }
-
-        Set<String> addedPackages = new HashSet<>();
-        List<UserHandle> profiles = launcherApps.getProfiles();
-        for (UserHandle profile : profiles) {
-            List<LauncherActivityInfo> apps = launcherApps.getActivityList(null, profile);
-            for (LauncherActivityInfo app : apps) {
-                String packageName = app.getApplicationInfo().packageName;
-                if (!addedPackages.contains(packageName)) {
-                    String appName = app.getLabel().toString();
-                    launchableApps.add(new Pair<>(packageName, appName));
-                    addedPackages.add(packageName);
-                }
-            }
-        }
+        // 이름순으로 정렬
         Collections.sort(launchableApps, Comparator.comparing(o -> o.second.toLowerCase()));
         return launchableApps;
     }
 
-    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
     private String getLaunchableApplicationsListString() {
-        // Use the modern LauncherApps service for an accurate list of apps across profiles
-        LauncherApps launcherApps = (LauncherApps) getSystemService(Context.LAUNCHER_APPS_SERVICE);
-        if (launcherApps == null) {
-            return "Could not access LauncherApps service.\n";
-        }
-
-        List<Pair<String, String>> launchableApps = new ArrayList<>();
-        Set<String> addedPackages = new HashSet<>(); // To avoid duplicates
-
-        // Get apps from all available user profiles (main, work, secure folder, etc.)
-        List<UserHandle> profiles = launcherApps.getProfiles();
-        for (UserHandle profile : profiles) {
-            List<LauncherActivityInfo> apps = launcherApps.getActivityList(null, profile);
-            for (LauncherActivityInfo app : apps) {
-                String packageName = app.getApplicationInfo().packageName;
-                if (!addedPackages.contains(packageName)) {
-                    String appName = app.getLabel().toString();
-                    launchableApps.add(new Pair<>(packageName, appName));
-                    addedPackages.add(packageName);
-                }
-            }
-        }
+        List<Pair<String, String>> launchableApps = getLaunchableApplications();
 
         if (launchableApps.isEmpty()) {
-            return "No applications found on this device.\n";
+            return "App list is not available yet. Please try again in a moment.\n";
         }
-
-        // Sort apps by name
-        Collections.sort(launchableApps, Comparator.comparing(o -> o.second.toLowerCase()));
 
         StringBuilder sb = new StringBuilder();
         sb.append("List of launchable applications (Format: Package Name : Display Name):\n");
@@ -497,7 +480,7 @@ public class MainActivity extends AppCompatActivity {
             sb.append("- ").append(appEntry.first).append(" : ").append(appEntry.second).append("\n");
         }
 
-        Log.d("MainActivity", "Total launchable apps found (LauncherApps): " + launchableApps.size());
+        Log.d("MainActivity", "Total launchable apps found (from cache): " + launchableApps.size());
         return sb.toString();
     }
 
@@ -555,7 +538,7 @@ public class MainActivity extends AppCompatActivity {
         String currentProvider = appPreferences.getAiProvider();
         String apiKey = appPreferences.getApiKeyForCurrentProvider();
 
-        if (apiKey.isEmpty() && !AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentProvider)) {
+        if (apiKey.isEmpty() && !AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentProvider) && !AppPreferences.PROVIDER_GEMINI_WEB.equals(currentProvider)) {
             String providerName = AppPreferences.PROVIDER_OPENAI.equals(currentProvider) ? "OpenAI" : "Gemini";
             textViewResult.setText("API Key for " + providerName + " is not set. Please set it in Settings.");
             Toast.makeText(this, "API Key for " + providerName + " is not set. Please set it in Settings.", Toast.LENGTH_LONG).show();

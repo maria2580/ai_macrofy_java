@@ -51,6 +51,12 @@
         </activity>
 
         <activity
+            android:name=".ui.WebViewActivity"
+            android:exported="false"
+            android:label="Login to Google"
+            android:theme="@style/Theme.AppCompat.Light.DarkActionBar" />
+
+        <activity
             android:name=".ui.AssistantTriggerActivity"
             android:exported="true"
             android:theme="@style/Theme.Transparent"
@@ -76,7 +82,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
+                android:resource="@xml/macro_accessibility_service_config" />
         </service>
         <service
             android:name=".services.accessibility.LayoutAccessibilityService"
@@ -88,7 +94,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
+                android:resource="@xml/layout_accessibility_service_config" />
         </service>
 
         <service

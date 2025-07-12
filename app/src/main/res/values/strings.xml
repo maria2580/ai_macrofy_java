@@ -1,4 +1,6 @@
 <resources>
-    <string name="app_name">AI Macrofy</string>
-    <string name="accessibility_service_description">This service helps automate tasks based on screen content and your instructions.</string>
+    <string name="app_name">Ai_macrofy</string>
+    <string name="accessibility_service_description">Enables AI Macrofy to automate tasks.</string>
+    <string name="accessibility_service_description_layout">This service allows AI Macrofy to read the screen layout to understand the context for automation.</string>
+    <string name="accessibility_service_description_macro">This service allows AI Macrofy to perform gestures like tapping and scrolling to execute macros.</string>
 </resources>
