@@ -17,6 +17,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.example.ai_macrofy.R;
 import com.example.ai_macrofy.utils.AppPreferences;
+import com.example.ai_macrofy.utils.SharedWebViewManager;
 
 public class SettingsActivity extends AppCompatActivity {
 
@@ -110,6 +111,12 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void loadSettings() {
+        // --- 추가: WebView 사용 가능 여부 확인 ---
+        if (!SharedWebViewManager.isWebViewAvailable()) {
+            radioButtonGeminiWeb.setEnabled(false);
+            radioButtonGeminiWeb.setText(radioButtonGeminiWeb.getText() + " (Not available on this device)");
+        }
+
         String aiProvider = appPreferences.getAiProvider();
         if (AppPreferences.PROVIDER_GEMINI.equals(aiProvider)) {
             radioButtonGemini.setChecked(true);

@@ -162,6 +162,11 @@ public class GPTManager implements AiModelService {
         return userCommand != null ? userCommand.trim() : "";
     }
 
+    @Override
+    public void cleanup() {
+
+    }
+
     private Bitmap drawGridOnBitmap(Bitmap originalBitmap) {
         Bitmap mutableBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true);
         Canvas canvas = new Canvas(mutableBitmap);

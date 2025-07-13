@@ -223,6 +223,11 @@ public class GeminiManager implements AiModelService {
         callGeminiApi(DEFAULT_MODEL_NAME, systemMessage, geminiApiContents, thinkingBudget, callback);
     }
 
+    @Override
+    public void cleanup() {
+        // No-op for API-based model
+    }
+
     private Bitmap drawGridOnBitmap(Bitmap originalBitmap) {
         Bitmap mutableBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true);
         Canvas canvas = new Canvas(mutableBitmap);

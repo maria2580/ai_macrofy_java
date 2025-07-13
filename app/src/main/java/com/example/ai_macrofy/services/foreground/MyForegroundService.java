@@ -94,6 +94,12 @@ public class MyForegroundService extends Service {
     private List<Pair<String, String>> actionHistoryForRepetitionCheck;
     private List<ChatMessage> chatHistory;
 
+    // --- Add failure tracking fields ---
+    private int consecutiveFailureCount = 0;
+    private String lastFailureFeedback = "";
+    private static final int MAX_CONSECUTIVE_FAILURES = 3;
+    // --- End of added fields ---
+
     private String currentApiKey;
     private String currentBaseSystemPrompt;
     private String currentUserCommand; // 최초 사용자 명령
@@ -120,6 +126,7 @@ public class MyForegroundService extends Service {
     private BroadcastReceiver loginSuccessReceiver;
     private WindowManager windowManager;
     private volatile boolean isWebViewAttached = false;
+    private volatile String webViewAttachmentError = null; // --- 추가: WebView 연결 오류 메시지 저장 ---
 
 
     @Override
@@ -139,7 +146,10 @@ public class MyForegroundService extends Service {
         mainThreadHandler.post(() -> {
             Log.d("MyForegroundService", "Getting shared WebView on main thread.");
             // SharedWebViewManager에서 WebView 인스턴스를 가져옵니다.
-            backgroundWebView = SharedWebViewManager.getWebView();
+            if(backgroundWebView == null) {
+                Log.d("MyForegroundService", "Getting new WebView instance."+SharedWebViewManager.isIsInitialized()+" available on shared:"+SharedWebViewManager.isWebViewAvailable()+ "  is Ready?"+SharedWebViewManager.isReady());
+                backgroundWebView = SharedWebViewManager.getWebView(this);
+            }
             setupBackgroundWebView();
             // 백그라운드 작업을 위해 WebView를 보이지 않는 창에 연결
             attachWebViewToWindow();
@@ -191,7 +201,7 @@ public class MyForegroundService extends Service {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                Log.d("MyForegroundService", "Background WebView page finished loading: " + url);
+                // Log.d("MyForegroundService", "Background WebView page finished loading: " + url); // --- 이 줄을 삭제합니다 ---
                 // --- 추가: 리스너가 있으면 로딩 완료 알림 ---
                 if (pageLoadListener != null) {
                     pageLoadListener.onPageFinished(view, url);
@@ -202,12 +212,15 @@ public class MyForegroundService extends Service {
 
     // --- 추가: WebView를 보이지 않는 창에 연결하는 메서드 ---
     private void attachWebViewToWindow() {
-        if (backgroundWebView == null || backgroundWebView.getParent() != null) {
+        if (backgroundWebView == null) {
+            Log.d("MyForegroundService", "WebView is null. Skipping attachment to window.");
+            return;
+        }
+
+        if (backgroundWebView.getParent() != null) {
             // 이미 다른 뷰에 연결되어 있거나(예: WebViewActivity) WebView가 준비되지 않은 경우
-            if (backgroundWebView != null && backgroundWebView.getParent() != null) {
-                isWebViewAttached = true; // 이미 붙어있으면 준비된 것으로 간주
-            }
-            Log.d("MyForegroundService", "WebView is already attached or null. Skipping attachment to window.");
+            isWebViewAttached = true; // 이미 붙어있으면 준비된 것으로 간주
+            Log.d("MyForegroundService", "WebView is already attached to a parent. Marking as ready and skipping new attachment.");
             return;
         }
 
@@ -238,6 +251,7 @@ public class MyForegroundService extends Service {
         } catch (Exception e) {
             Log.e("MyForegroundService", "Error attaching WebView to window", e);
             isWebViewAttached = false; // 실패
+            webViewAttachmentError = e.getMessage(); // --- 추가: 오류 메시지 저장 ---
         }
     }
 
@@ -285,6 +299,38 @@ public class MyForegroundService extends Service {
         });
     }
 
+    // --- 추가: JavaScript에서 Android로 결과를 비동기적으로 보내기 위한 콜백 인터페이스 ---
+    public interface JavaScriptCallback {
+        void onResult(String result);
+    }
+
+    // --- 추가: JavaScript에서 window.androidCallback()을 호출하면 결과를 받는 메서드 ---
+    @SuppressLint("JavascriptInterface")
+    public void evaluateJavascriptWithCallback(String script, JavaScriptCallback callback) {
+        mainThreadHandler.post(() -> {
+            if (backgroundWebView != null) {
+                // 1. 자바스크립트 인터페이스 추가
+                backgroundWebView.addJavascriptInterface(new Object() {
+                    @android.webkit.JavascriptInterface
+                    public void postMessage(String result) {
+                        // JavaScript에서 보낸 결과를 메인 스레드에서 처리
+                        mainThreadHandler.post(() -> {
+                            // 사용 후 즉시 인터페이스 제거
+                            backgroundWebView.removeJavascriptInterface("androidCallbackBridge");
+                            callback.onResult(result);
+                        });
+                    }
+                }, "androidCallbackBridge");
+
+                // 2. window.androidCallback 함수를 정의하고, 원래 스크립트를 실행하는 래퍼 스크립트 생성
+                String wrapperScript = "window.androidCallback = function(result) { androidCallbackBridge.postMessage(result); };" + script;
+                backgroundWebView.evaluateJavascript(wrapperScript, null); // 결과는 콜백으로 오므로 여기서는 null
+            } else {
+                callback.onResult("ERROR: WebView is not available.");
+            }
+        });
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d("MyForegroundService", "onStartCommand received");
@@ -310,6 +356,11 @@ public class MyForegroundService extends Service {
             Log.w("MyForegroundService", "Macro is already running. Ignoring new start command.");
             return START_STICKY;
         }
+
+        // --- Reset failure counter on new macro start ---
+        consecutiveFailureCount = 0;
+        lastFailureFeedback = "";
+        // --- End of reset ---
 
         // Start the service in the foreground immediately.
         // This is crucial to satisfy the requirement for MediaProjection.
@@ -403,10 +454,27 @@ public class MyForegroundService extends Service {
             // Gemini is remote, no special initialization needed, proceed directly.
             checkServicesAndStartMacro(0);
         } else if (AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName)) {
+            // --- 수정: WebView 사용 불가 시 재초기화 시도 로직 추가 ---
+            if (!SharedWebViewManager.isWebViewAvailable()) {
+                Log.w("MyForegroundService", "WebView was not available. Attempting to re-initialize...");
+                SharedWebViewManager.init(this); // 서비스 컨텍스트로 재초기화 시도
+                // 재초기화가 비동기로 처리되므로, 잠시 후 다시 확인
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    if (!SharedWebViewManager.isWebViewAvailable()) {
+                        Log.e("MyForegroundService", "WebView re-initialization failed. Cannot use Gemini Web provider.");
+                        mainHandler.post(() -> Toast.makeText(getApplicationContext(), "WebView is not available on this device.", Toast.LENGTH_LONG).show());
+                        stopMacroExecution();
+                    } else {
+                        Log.d("MyForegroundService", "WebView re-initialized successfully. Proceeding with macro.");
+                        initializeAiServiceAndStart(); // 성공했으므로 다시 이 메서드를 호출하여 정상 로직 진행
+                    }
+                }, 1000); // 1초 대기 후 확인
+                return; // 재초기화 시도 중에는 여기서 반환
+            }
+
             currentAiModelService = new GeminiWebManager();
             currentAiModelService.setContext(this);
             // Web UI automation doesn't need an API key or special initialization.
-            // It will launch its own activity to perform tasks.
             checkServicesAndStartMacro(0);
         } else if (AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentAiProviderName)) {
             GemmaManager gemmaManager = GemmaManager.getInstance(this);
@@ -440,18 +508,46 @@ public class MyForegroundService extends Service {
     }
 
     private void checkServicesAndStartMacro(int attempt) {
-        if (LayoutAccessibilityService.instance == null || MacroAccessibilityService.instance == null) {
+        boolean webViewCheckNeeded = AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName);
+
+        // --- 추가: WebView 연결에 명시적인 오류가 발생했는지 먼저 확인 ---
+        if (webViewCheckNeeded && webViewAttachmentError != null) {
+            Log.e("MyForegroundService", "Failing macro due to WebView attachment error: " + webViewAttachmentError);
+            // 사용자에게 더 명확한 피드백 제공
+            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "WebView setup failed. Check 'Draw over other apps' permission.", Toast.LENGTH_LONG).show());
+            stopMacroExecution(); // 매크로를 즉시 중단
+            return;
+        }
+
+        // --- 수정: gemini_web 제공자일 경우 WebView 준비 상태도 함께 확인 ---
+        boolean webViewIsReady = !webViewCheckNeeded || isWebViewReady();
+
+        if (LayoutAccessibilityService.instance == null || MacroAccessibilityService.instance == null || !webViewIsReady) {
             if (attempt < MAX_SERVICE_CHECK_ATTEMPTS) {
-                Log.w("MyForegroundService", "Accessibility services not ready yet. Attempt " + (attempt + 1) + "/" + MAX_SERVICE_CHECK_ATTEMPTS + ". Retrying in " + SERVICE_CHECK_INTERVAL_MS + "ms.");
+                String reason = "";
+                if (LayoutAccessibilityService.instance == null || MacroAccessibilityService.instance == null) {
+                    reason += "Accessibility services not ready. ";
+                }
+                if (!webViewIsReady) {
+                    reason += "WebView not ready. ";
+                }
+                Log.w("MyForegroundService", reason + "Attempt " + (attempt + 1) + "/" + MAX_SERVICE_CHECK_ATTEMPTS + ". Retrying in " + SERVICE_CHECK_INTERVAL_MS + "ms.");
                 timerHandler.postDelayed(() -> checkServicesAndStartMacro(attempt + 1), SERVICE_CHECK_INTERVAL_MS);
             } else {
-                Log.e("MyForegroundService", "Accessibility services not available after " + (MAX_SERVICE_CHECK_ATTEMPTS * SERVICE_CHECK_INTERVAL_MS) + "ms. Stopping macro.");
-                mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Accessibility Services not ready. Macro stopped.", Toast.LENGTH_LONG).show());
+                String reason = "";
+                if (LayoutAccessibilityService.instance == null || MacroAccessibilityService.instance == null) {
+                    reason += "Accessibility Services not available. ";
+                }
+                if (!webViewIsReady) {
+                    reason += "WebView not available. ";
+                }
+                Log.e("MyForegroundService", reason + "after " + (MAX_SERVICE_CHECK_ATTEMPTS * SERVICE_CHECK_INTERVAL_MS) + "ms. Stopping macro.");
+                mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Required services not ready. Macro stopped.", Toast.LENGTH_LONG).show());
                 isMacroRunning = false;
                 stopSelfAppropriately();
             }
         } else {
-            Log.d("MyForegroundService", "Accessibility services are ready. Starting macro steps.");
+            Log.d("MyForegroundService", "All required services are ready. Starting macro steps.");
             scheduleNextMacroStep(0); // 즉시 첫 단계 실행
         }
     }
@@ -590,7 +686,7 @@ public class MyForegroundService extends Service {
     private void sendRequestToModel(@Nullable String jsonLayout, @Nullable android.graphics.Bitmap bitmap, @Nullable String screenText) {
         // 수정: 첫 요청인 경우에만 전체 사용자 명령을 전달하고, 그 이후에는 빈 문자열을 전달합니다.
         // 이렇게 하면 모델이 이전 행동의 맥락을 기반으로 다음 행동을 추론하게 됩니다.
-        String commandForLlm = chatHistory.isEmpty() ? currentUserCommand : "";
+        String commandForLlm = currentUserCommand; // --- 수정: 항상 최초 사용자 명령을 전달하도록 변경 ---
 
         // 0.5초 룰: AI 모델에 요청을 보내기 직전에 타임스탬프를 기록합니다.
         lastRequestTimestamp = System.currentTimeMillis();
@@ -609,6 +705,9 @@ public class MyForegroundService extends Service {
                         if (!isMacroRunning) return;
 
                         Log.d("MyForegroundService", currentAiProviderName + " Raw Response: " + rawResponse);
+
+                        // Successful response, so reset the failure counter.
+                        resetFailureCounter();
 
                         String pureJsonAction = null;
 
@@ -686,11 +785,7 @@ public class MyForegroundService extends Service {
                         String inputContextForHistory;
                         if (bitmap != null) {
                             // 수정: 첫 요청이 아닐 경우 User Command를 포함하지 않도록 수정합니다.
-                            if (commandForLlm.isEmpty()) {
-                                inputContextForHistory = "[SCREENSHOT]";
-                            } else {
-                                inputContextForHistory = "[SCREENSHOT] + User Command: " + commandForLlm;
-                            }
+                            inputContextForHistory = "[SCREENSHOT] + User Command: " + commandForLlm;
                         } else {
                             // This path is less likely now
                             inputContextForHistory = "User Command: " + commandForLlm + "\n" +
@@ -717,21 +812,9 @@ public class MyForegroundService extends Service {
                         if (!isMacroRunning) return;
                         Log.e("MyForegroundService", currentAiProviderName + " API Error: " + error);
 
-                        // Gemini Web 로그인 필요 에러 처리
-                        if ("LOGIN_REQUIRED".equals(error)) {
-                            Log.d("MyForegroundService", "Login required for Gemini Web. Launching WebViewActivity.");
-                            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Please log in to Google to continue.", Toast.LENGTH_LONG).show());
-                            // Launch the visible WebView for the user to log in.
-                            Intent intent = new Intent(MyForegroundService.this, WebViewActivity.class);
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            startActivity(intent);
-                            // 여기서 멈추고 브로드캐스트를 기다립니다. 다음 스텝을 예약하지 않습니다.
-                            return;
-                        }
-
-                        mainHandler.post(() -> Toast.makeText(getApplicationContext(), currentAiProviderName + " API Error: " + error + ". Retrying.", Toast.LENGTH_LONG).show());
-                        addExecutionFeedbackToHistory("LLM API Error: " + error);
-                        scheduleNextMacroStep(actionFailureRetryDelay);
+                        // --- Add failure tracking for API errors ---
+                        handleFailure("LLM API Error: " + error);
+                        // --- End of failure tracking ---
                     }
                 });
     }
@@ -741,13 +824,44 @@ public class MyForegroundService extends Service {
 
         if (success) {
             Log.d("MyForegroundService", "Action reported as successful.");
+            // Successful action, so reset the failure counter.
+            resetFailureCounter();
             scheduleNextMacroStep(instructionInterval);
         } else {
             Log.e("MyForegroundService", "Action reported as failed: " + feedback);
+            // --- Add failure tracking for action execution errors ---
+            handleFailure(feedback != null ? feedback : "Unknown action execution error.");
+            // --- End of failure tracking ---
+        }
+    }
+
+    private void resetFailureCounter() {
+        if (consecutiveFailureCount > 0) {
+            Log.d("MyForegroundService", "Resetting failure counter.");
+        }
+        consecutiveFailureCount = 0;
+        lastFailureFeedback = "";
+    }
+
+    private void handleFailure(String feedback) {
+        if (feedback.equals(lastFailureFeedback)) {
+            consecutiveFailureCount++;
+            Log.w("MyForegroundService", "Consecutive failure " + consecutiveFailureCount + " with same feedback: " + feedback);
+        } else {
+            consecutiveFailureCount = 1;
+            lastFailureFeedback = feedback;
+            Log.w("MyForegroundService", "New failure type, resetting count to 1. Feedback: " + feedback);
+        }
+
+        if (consecutiveFailureCount >= MAX_CONSECUTIVE_FAILURES) {
+            Log.e("MyForegroundService", "Max consecutive failures (" + MAX_CONSECUTIVE_FAILURES + ") reached. Stopping macro.");
+            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Macro stopped after " + MAX_CONSECUTIVE_FAILURES + " consecutive errors.", Toast.LENGTH_LONG).show());
+            stopMacroExecution();
+        } else {
             if (getApplicationContext() != null) {
-                mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Action Failed: " + feedback + ". LLM will be informed.", Toast.LENGTH_LONG).show());
+                mainHandler.post(() -> Toast.makeText(getApplicationContext(), "Action Failed: " + feedback + ". Retrying (" + consecutiveFailureCount + "/" + MAX_CONSECUTIVE_FAILURES + ")", Toast.LENGTH_LONG).show());
             }
-            addExecutionFeedbackToHistory(feedback != null ? feedback : "Unknown action execution error.");
+            addExecutionFeedbackToHistory(feedback);
             scheduleNextMacroStep(actionFailureRetryDelay);
         }
     }
@@ -766,6 +880,13 @@ public class MyForegroundService extends Service {
     public void stopMacroExecution() {
         Log.d("MyForegroundService", "stopMacroExecution called. Stopping service.");
         isMacroRunning = false;
+
+        // --- 추가: 현재 AI 서비스에 대한 정리 작업 호출 ---
+        if (currentAiModelService != null) {
+            Log.d("MyForegroundService", "Performing cleanup for provider: " + currentAiProviderName);
+            currentAiModelService.cleanup();
+        }
+
         // Release all resources related to MediaProjection
         if (virtualDisplay != null) {
             virtualDisplay.release();

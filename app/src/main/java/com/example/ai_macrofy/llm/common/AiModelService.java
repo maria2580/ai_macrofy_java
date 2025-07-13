@@ -20,4 +20,6 @@ public interface AiModelService {
                           ModelResponseCallback callback);
 
     String processUserCommandForPrompt(String userCommand); // Remains as is, used by managers internally
+
+    void cleanup();
 }
