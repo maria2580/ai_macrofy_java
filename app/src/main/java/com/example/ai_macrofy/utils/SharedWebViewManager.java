@@ -16,34 +16,20 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 public class SharedWebViewManager {
-
     private static final String TAG = "SharedWebViewManager";
-    private static WebView webView;
-    private static Uri pendingFileUri;
-    private static WindowManager windowManager;
-    private static volatile boolean isWebViewAttached = false;
-    private static Context applicationContext;
-    private static volatile boolean isWebViewAvailable = true; // --- 추가: WebView 사용 가능 여부 플래그 ---
-    private static volatile boolean isInitialized = false; // --- 추가: 초기화 실행 여부 플래그 ---
+    private static volatile WebView webView; // --- volatile 추가 ---
+    private static volatile boolean isAttached = false; // --- volatile 추가 및 이동 ---
 
     @SuppressLint("SetJavaScriptEnabled")
-    public static synchronized void init(Context context) {
-        if (isInitialized) { // --- 수정: webView == null 대신 isInitialized 플래그 사용 ---
-            return;
-        }
-        applicationContext = context.getApplicationContext();
-        windowManager = (WindowManager) applicationContext.getSystemService(Context.WINDOW_SERVICE);
-
-        // WebView는 UI 스레드에서 생성되어야 합니다.
-        new Handler(Looper.getMainLooper()).post(() -> {
-            try { // --- 추가: WebView 생성 오류를 잡기 위한 try-catch 블록 ---
-                Log.d(TAG, "Initializing Shared WebView on main thread.");
-                webView = new WebView(applicationContext);
-
-                // 기본 설정
+    public static synchronized void init(Context context) { // --- synchronized 추가 ---
+        if (webView == null) {
+            try {
+                Log.d(TAG, "Attempting to initialize new WebView instance.");
+                webView = new WebView(context.getApplicationContext());
                 WebSettings webSettings = webView.getSettings();
                 webSettings.setJavaScriptEnabled(true);
                 webSettings.setDomStorageEnabled(true);
@@ -52,127 +38,73 @@ public class SharedWebViewManager {
                 webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 webView.setWebViewClient(new WebViewClient());
                 webView.setWebChromeClient(new WebChromeClient());
-
-                // 백그라운드 작업을 위해 보이지 않는 창에 연결
-                attachToWindow();
-                Log.d(TAG, "Shared WebView initialized successfully.");
+                Log.d(TAG, "WebView initialized successfully.");
             } catch (Exception e) {
-                Log.e(TAG, "FATAL: Failed to initialize WebView. The WebView component might be missing or disabled on this device.", e);
-                isWebViewAvailable = false; // --- 추가: WebView 사용 불가로 플래그 설정 ---
-                webView = null;
-            } finally {
-                isInitialized = true; // --- 추가: 초기화 시도 완료로 플래그 설정 ---
+                // Catch exceptions during WebView instantiation, which can happen if
+                // the WebView provider is missing or disabled on the device.
+                Log.e(TAG, "Failed to initialize WebView. Web-based features will be unavailable.", e);
+                webView = null; // Ensure webView is null so isWebViewAvailable() returns false.
             }
-        });
+        }
     }
 
     public static WebView getWebView() {
         return webView;
     }
 
-    // Context를 받는 오버로드 메서드는 이제 getWebView()로 대체될 수 있습니다.
-    // 하지만 호환성을 위해 유지합니다.
-    public static WebView getWebView(Context context) {
-        if (!isInitialized) { // --- 수정: webView == null 대신 isInitialized 플래그 사용 ---
+    // --- 수정: getWebView가 Context를 받도록 하고, 필요시 init을 호출 ---
+    public static synchronized WebView getWebView(Context context) {
+        if (webView == null) {
             init(context);
         }
         return webView;
     }
 
-    public static void setPendingFileUri(Uri uri) {
-        pendingFileUri = uri;
+    // --- 추가: isReady() 메서드 ---
+    public static boolean isReady() {
+        return webView != null && isAttached;
     }
 
-    public static Uri getAndClearPendingFileUri() {
-        Uri uri = pendingFileUri;
-        pendingFileUri = null;
-        return uri;
+    // --- 수정: isWebViewAvailable이 공유 인스턴스를 확인하도록 변경 ---
+    public static boolean isWebViewAvailable() {
+        return webView != null;
     }
 
-    public static void onResume() {
-        if (webView != null) {
-            new Handler(Looper.getMainLooper()).post(() -> {
-                attachToWindow(); // 다시 보이지 않는 창에 연결
-                webView.onResume();
-            });
+    public static void attachWebView(FrameLayout container) {
+        if (webView != null && webView.getParent() == null) {
+            container.addView(webView, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+            isAttached = true;
         }
     }
 
-    public static void onPause() {
-        if (webView != null) {
-            new Handler(Looper.getMainLooper()).post(() -> {
-                webView.onPause();
-                detachFromWindow(); // 앱이 보이지 않을 때 창에서 제거
-            });
-        }
-    }
-    public static void attachWebView(ViewGroup parent) {
-        // --- 추가: WebView가 이미 다른 부모를 가지고 있는지 확인 ---
-        if (webView != null && webView.getParent() != null) {
-            // 이미 부모가 있다면, 먼저 기존 부모로부터 분리합니다.
-            // 이는 WebViewActivity에서 MainActivity로 돌아올 때 발생할 수 있습니다.
-            ((ViewGroup)webView.getParent()).removeView(webView);
-        }
-        if (parent != null && webView != null) {
-            parent.addView(webView, new ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT));
-            isWebViewAttached = true;
-        }
-    }
-
-    public static void detachWebView(ViewGroup parent) {
-        if (webView != null && webView.getParent() == parent) {
+    public static void detachWebView(FrameLayout container) {
+        if (webView != null && webView.getParent() == container) {
             new Handler(Looper.getMainLooper()).post(() -> {
                 Log.d(TAG, "Detaching shared WebView from its parent.");
-                parent.removeView(webView);
+                container.removeView(webView);
+                // isAttached는 WindowManager에서 제거될 때 false로 설정됩니다.
             });
         }
     }
-    public static void destroy() {
-        if (webView != null) {
-            new Handler(Looper.getMainLooper()).post(() -> {
-                detachFromWindow();
-                webView.destroy();
-                webView = null;
-                applicationContext = null;
-                windowManager = null;
-                isWebViewAttached = false;
-                isInitialized = false; // --- 추가: 파괴 시 초기화 플래그 리셋 ---
-                isWebViewAvailable = true; // --- 추가: 다음 시도를 위해 플래그 리셋 ---
-            });
-        }
-    }
-    public static boolean isIsInitialized(){
-        return isInitialized;
-    }
-    public static boolean isReady() {
-        return webView != null && isWebViewAttached;
-    }
 
-    // --- 추가: WebView 사용 가능 여부를 반환하는 새 메서드 ---
-    public static boolean isWebViewAvailable() {
-        return isWebViewAvailable;
-    }
-
-    private static void attachToWindow() {
+    // --- 추가: WindowManager에 직접 연결 및 제거하는 메서드 ---
+    public static void attachToWindow(Context context) {
         if (webView == null) {
-            Log.d(TAG, "WebView is null. Skipping attachment to window.");
+            Log.e(TAG, "WebView is null, cannot attach to window.");
             return;
         }
-
-        if (webView.getParent() != null) {
-            isWebViewAttached = true;
-            Log.d(TAG, "WebView is already attached to a parent. Skipping new attachment.");
+        if (isAttached || webView.getParent() != null) {
+            Log.d(TAG, "WebView is already attached.");
+            isAttached = true; // 상태 동기화
             return;
         }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(applicationContext)) {
-            Log.e(TAG, "Overlay permission not granted. Cannot attach WebView to window.");
-            Toast.makeText(applicationContext, "Overlay permission needed for background web tasks.", Toast.LENGTH_LONG).show();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+            Log.e(TAG, "Overlay permission not granted.");
             return;
         }
-
+        WindowManager windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 1, 1,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
@@ -184,28 +116,52 @@ public class SharedWebViewManager {
                 PixelFormat.TRANSPARENT
         );
         params.gravity = Gravity.START | Gravity.TOP;
-
         try {
-            if (!webView.isAttachedToWindow()) {
-                windowManager.addView(webView, params);
-                isWebViewAttached = true;
-                Log.d(TAG, "Attached background WebView to an invisible window.");
-            }
+            windowManager.addView(webView, params);
+            isAttached = true;
+            Log.d(TAG, "Attached background WebView to an invisible window.");
         } catch (Exception e) {
             Log.e(TAG, "Error attaching WebView to window", e);
-            isWebViewAttached = false;
         }
     }
 
-    private static void detachFromWindow() {
-        if (webView != null && webView.isAttachedToWindow() && !(webView.getParent() instanceof ViewGroup)) {
+    public static void detachFromWindow(Context context) {
+        if (webView != null && isAttached && webView.isAttachedToWindow() && !(webView.getParent() instanceof ViewGroup)) {
+            WindowManager windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
             try {
                 windowManager.removeView(webView);
-                isWebViewAttached = false;
+                isAttached = false;
                 Log.d(TAG, "Removed background WebView from invisible window.");
             } catch (Exception e) {
                 Log.e(TAG, "Error removing WebView from window", e);
             }
+        }
+    }
+
+
+    public static void onResume() {
+        if (webView != null) {
+            webView.onResume();
+        }
+    }
+
+    public static void onPause() {
+        if (webView != null) {
+            webView.onPause();
+        }
+    }
+
+    // --- 추가: 앱 종료 시 호출될 destroy 메서드 ---
+    public static void destroy() {
+        if (webView != null) {
+            // Ensure it's detached from any window
+            if (webView.getParent() instanceof ViewGroup) {
+                ((ViewGroup) webView.getParent()).removeView(webView);
+            }
+            webView.destroy();
+            webView = null;
+            isAttached = false;
+            Log.d(TAG, "Shared WebView destroyed.");
         }
     }
 }

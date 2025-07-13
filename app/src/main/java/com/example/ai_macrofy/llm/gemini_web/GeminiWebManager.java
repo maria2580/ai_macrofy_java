@@ -30,6 +30,7 @@ public class GeminiWebManager implements AiModelService {
     private AppPreferences appPreferences;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private GeminiWebHelper webHelper;
+    private boolean isFirstRequest = true; // --- 추가: 첫 요청인지 판별하는 플래그 ---
 
     @Override
     public void setApiKey(String apiKey) {
@@ -53,49 +54,18 @@ public class GeminiWebManager implements AiModelService {
             return;
         }
 
-        if (!appPreferences.isGeminiWebLoggedIn()) {
-            Log.w(TAG, "Not logged into Gemini Web. Prompting user to login.");
-            Intent intent = new Intent(context, WebViewActivity.class);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(intent);
-            callback.onError("User needs to log in to Gemini Web.");
-            return;
-        }
-
         executor.execute(() -> {
             String finalPrompt = buildFinalPrompt(systemInstruction, conversationHistory, currentUserVoiceCommand);
 
-            foregroundService.loadUrlInBackground(GEMINI_URL);
-
-            // Wait for page to load
-            final AtomicBoolean pageLoaded = new AtomicBoolean(false);
-            foregroundService.setPageLoadListener((view, url) -> {
-                if (url.contains("gemini.google.com")) {
-                    pageLoaded.set(true);
-                }
-            });
-
-            try {
-                // Give it a moment to start loading
-                Thread.sleep(2000);
-                long startTime = System.currentTimeMillis();
-                while (!pageLoaded.get() && System.currentTimeMillis() - startTime < 15000) {
-                    Thread.sleep(500);
-                }
-                foregroundService.setPageLoadListener(null); // Unset listener
-
-                if (!pageLoaded.get()) {
-                    Log.e(TAG, "Timeout waiting for Gemini page to load.");
-                    callback.onError("Timeout waiting for Gemini page to load.");
-                    return;
-                }
-
+            // --- 수정: isFirstRequest 플래그를 사용하여 첫 요청과 후속 요청을 분기합니다. ---
+            if (isFirstRequest) {
+                Log.d(TAG, "This is the first request. Starting full sequence with URL load and login check.");
+                isFirstRequest = false; // 다음 요청부터는 다른 분기를 타도록 플래그를 변경합니다.
                 webHelper.generateResponse(finalPrompt, currentScreenBitmap, callback);
-
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                Log.e(TAG, "Gemini Web execution was interrupted.", e);
-                callback.onError("Gemini Web execution was interrupted.");
+            } else {
+                Log.d(TAG, "This is a subsequent request. Submitting prompt directly without reloading the page.");
+                // 후속 요청은 페이지 로드나 로그인 확인 없이 바로 프롬프트를 제출합니다.
+                webHelper.submitPrompt(finalPrompt, currentScreenBitmap, callback);
             }
         });
     }
@@ -121,6 +91,7 @@ public class GeminiWebManager implements AiModelService {
     @Override
     public void cleanup() {
         Log.d(TAG, "Cleaning up GeminiWebManager.");
+        isFirstRequest = true; // --- 추가: 서비스 종료 시 플래그를 리셋합니다. ---
         executor.shutdownNow();
     }
 }

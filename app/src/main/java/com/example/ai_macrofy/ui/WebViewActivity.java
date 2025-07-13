@@ -41,7 +41,7 @@ public class WebViewActivity extends AppCompatActivity {
         webViewContainer = findViewById(R.id.webview_container);
 
         // SharedWebViewManager에서 WebView 인스턴스를 가져옵니다.
-        webView = SharedWebViewManager.getWebView();
+        webView = SharedWebViewManager.getWebView(this);
         if (webView == null) {
             Toast.makeText(this, "WebView could not be initialized. Please restart the app.", Toast.LENGTH_LONG).show();
             finish();

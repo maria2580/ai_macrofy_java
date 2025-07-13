@@ -20,6 +20,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean; // --- 추가 ---
 
 public class GeminiWebHelper {
 
@@ -30,6 +31,7 @@ public class GeminiWebHelper {
     private ModelResponseCallback pendingCallback;
     private String finalPrompt;
     private Bitmap pendingBitmap; // --- 추가: 비트맵 저장 ---
+    private final AtomicBoolean isAwaitingSubmission = new AtomicBoolean(false); // --- 추가: 제출 대기 상태 플래그 ---
 
     public GeminiWebHelper(MyForegroundService serviceContext) {
         this.serviceContext = serviceContext;
@@ -41,6 +43,7 @@ public class GeminiWebHelper {
         this.finalPrompt = finalPrompt;
         this.pendingBitmap = bitmap;
         this.pendingCallback = callback;
+        // this.isAwaitingSubmission.set(false); // --- 제거: 진행 중인 요청을 방해할 수 있으므로 상태를 여기서 초기화하지 않습니다. ---
 
         waitForWebViewAndProceed();
     }
@@ -77,9 +80,9 @@ public class GeminiWebHelper {
     // --- 추가: URL 로딩과 로그인 확인을 통합한 새 메서드 ---
     private void loadUrlAndCheckLogin() {
         serviceContext.setPageLoadListener((view, url) -> {
-            // 페이지 로드가 완료되면 (URL이 gemini.google.com/app 인 경우) 로그인 상태를 확인합니다.
-            if (url.startsWith("https://gemini.google.com/app")) {
-                Log.d(TAG, "Gemini app page finished loading. Checking login status.");
+            // --- 수정: URL 확인 조건을 완화하여 gemini.google.com 도메인 전체에 대해 반응하도록 변경 ---
+            if (url.startsWith(GEMINI_URL)) {
+                Log.d(TAG, "Gemini page finished loading: " + url + ". Checking login status.");
                 serviceContext.setPageLoadListener(null); // 리스너를 즉시 제거하여 중복 호출 방지
                 checkLoginStatus();
             }
@@ -112,18 +115,20 @@ public class GeminiWebHelper {
         handler.post(new Runnable() {
             @Override
             public void run() {
-                if (pendingCallback == null) { // 콜백이 null이면 작업이 취소된 것이므로 중단
-                    Log.d(TAG, "Login check stopped, callback is null.");
+                if (pendingCallback == null && !isAwaitingSubmission.get()) { // --- 수정: 제출 대기 상태도 확인 ---
+                    Log.d(TAG, "Login check stopped, callback is null and not awaiting submission.");
                     return;
                 }
                 currentAttempt[0]++;
                 Log.d(TAG, "Checking for login... Attempt " + currentAttempt[0] + "/" + maxAttempts);
                 serviceContext.evaluateJavascriptInBackground(checkLoginScript, loginStatus -> {
-                    if (pendingCallback == null) return;
+                    if (pendingCallback == null && !isAwaitingSubmission.get()) return; // --- 수정: 제출 대기 상태도 확인 ---
 
                     if ("\"LOGGED_IN\"".equals(loginStatus)) {
                         Log.d(TAG, "User is logged in. Proceeding to submit prompt.");
-                        submitPrompt();
+                        // --- 수정: isAwaitingSubmission 플래그 검사를 제거하고 submitPrompt를 직접 호출합니다. ---
+                        // submitPrompt가 플래그 관리를 중앙에서 처리합니다.
+                        submitPrompt(GeminiWebHelper.this.finalPrompt, GeminiWebHelper.this.pendingBitmap, GeminiWebHelper.this.pendingCallback);
                     } else if ("\"NOT_LOGGED_IN\"".equals(loginStatus)) {
                         handleError("LOGIN_REQUIRED");
                     } else {
@@ -140,8 +145,32 @@ public class GeminiWebHelper {
         });
     }
 
-    private void submitPrompt() {
+    public void submitPrompt(String finalPrompt, @Nullable Bitmap bitmap, ModelResponseCallback callback) {
+        // --- 수정: isAwaitingSubmission 플래그를 사용하여 중복 호출을 더 안정적으로 방지합니다. ---
+        if (!isAwaitingSubmission.compareAndSet(false, true)) {
+            Log.w(TAG, "WARNING: submitPrompt called while another request is pending or already in submission queue!");
+            // --- 추가: 이전 요청이 멈춘 경우, 에러 처리하고 새 요청을 위해 상태를 리셋합니다. ---
+            if (this.pendingCallback != null) {
+                Log.e(TAG, "Force-failing previous stuck request.");
+                handleError("New request arrived, cancelling the previous one.");
+                // 재시도를 위해 잠시 후 다시 submitPrompt를 호출하도록 유도할 수 있으나,
+                // 여기서는 일단 이전 요청을 정리하고 새 요청은 무시하여 시스템 안정을 우선합니다.
+            }
+            // --- 수정: 이미 다른 요청이 처리 중일 때, 현재 콜백을 덮어쓰지 않고 즉시 반환합니다. ---
+            if (this.pendingCallback != callback) {
+                 Log.w(TAG, "A different callback was provided. The original request will proceed. The new request is ignored.");
+            }
+            return;
+        }
+        Log.d(TAG, "submitPrompt called. Setting new callback and proceeding.");
+        
+        // --- 수정: 파라미터 설정 로직을 플래그 확인 후로 이동 ---
+        this.finalPrompt = finalPrompt;
+        this.pendingBitmap = bitmap;
+        this.pendingCallback = callback; // --- 수정: submitPrompt에서도 콜백을 설정하도록 복원 ---
+
         if (pendingBitmap != null) {
+            Log.d("GeminiWebHelper", "Submitting prompt with image.");
             // --- 수정: 파일 업로드 대신 붙여넣기(paste) 방식으로 변경 ---
             // 1. 비트맵에 격자를 그리고 Base64 문자열로 변환
             Bitmap bitmapWithGrid = drawGridOnBitmap(pendingBitmap);
@@ -162,49 +191,55 @@ public class GeminiWebHelper {
                 "        }" +
                 "        return null;" +
                 "    }" +
-                "    const maxAttempts = 25;" +
-                "    const delay = 200;" +
-                "    let attempts = 0;" +
-                "    function performPaste() {" +
-                "        const target = findElement('rich-textarea .ql-editor');" +
-                "        if (target) {" +
-                "            const base64Data = '" + base64Image + "';" +
-                "            try {" +
-                "                const byteCharacters = atob(base64Data);" +
-                "                const byteNumbers = new Array(byteCharacters.length);" +
-                "                for (let i = 0; i < byteCharacters.length; i++) {" +
-                "                    byteNumbers[i] = byteCharacters.charCodeAt(i);" +
-                "                }" +
-                "                const byteArray = new Uint8Array(byteNumbers);" +
-                "                const blob = new Blob([byteArray], {type: 'image/png'});" +
-                "                const dataTransfer = new DataTransfer();" +
-                "                dataTransfer.items.add(new File([blob], 'screenshot.png', {type: 'image/png'}));" +
-                "                const pasteEvent = new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true });" +
-                "                target.dispatchEvent(pasteEvent);" +
-                "                window.androidCallback('PASTE_EVENT_DISPATCHED');" +
-                "            } catch (e) { window.androidCallback('ERROR: ' + e.message); }" +
-                "        } else if (attempts < maxAttempts) {" +
-                "            attempts++;" +
-                "            setTimeout(performPaste, delay);" +
-                "        } else {" +
-                "            window.androidCallback('ERROR: Prompt input area (.ql-editor) not found after ' + (maxAttempts * delay) + 'ms.');" +
+                "    const target = findElement('rich-textarea .ql-editor');" +
+                "    if (!target) { return 'ERROR: Prompt input area (.ql-editor) not found.'; }" +
+                "    const base64Data = '" + base64Image + "';" +
+                "    try {" +
+                "        const byteCharacters = atob(base64Data);" +
+                "        const byteNumbers = new Array(byteCharacters.length);" +
+                "        for (let i = 0; i < byteCharacters.length; i++) {" +
+                "            byteNumbers[i] = byteCharacters.charCodeAt(i);" +
                 "        }" +
-                "    }" +
-                "    performPaste();" +
+                "        const byteArray = new Uint8Array(byteNumbers);" +
+                "        const blob = new Blob([byteArray], {type: 'image/png'});" +
+                "        const dataTransfer = new DataTransfer();" +
+                "        dataTransfer.items.add(new File([blob], 'screenshot.png', {type: 'image/png'}));" +
+                "        const pasteEvent = new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true });" +
+                "        target.dispatchEvent(pasteEvent);" +
+                "        return 'PASTE_EVENT_DISPATCHED';" + // 수정: window.androidCallback 대신 직접 반환
+                "    } catch (e) { return 'ERROR: ' + e.message; }" + // 수정: window.androidCallback 대신 직접 반환
                 "})();";
 
-            // 3. 스크립트 실행 (콜백을 통해 결과를 받도록 수정)
-            serviceContext.evaluateJavascriptWithCallback(pasteScript, result -> {
-                if ("PASTE_EVENT_DISPATCHED".equals(result)) {
-                    Log.d(TAG, "Paste event dispatched successfully.");
-                    // 4. 이미지 썸네일이 나타날 때까지 폴링
-                    pollForImageAndSubmitPrompt();
-                } else {
-                    handleError("Failed to dispatch paste event: " + result);
-                }
+            // --- 수정: 스크립트 실행과 타임아웃을 자체 핸들러에서 관리하여 안정성 확보 ---
+            new Handler(Looper.getMainLooper()).post(() -> {
+                // Paste 이벤트 타임아웃 핸들러
+                final Handler timeoutHandler = new Handler(Looper.getMainLooper());
+                final Runnable timeoutRunnable = () -> {
+                    Log.e(TAG, "Timeout waiting for paste event callback. The operation may be stuck.");
+                    handleError("Timeout: Failed to get a response from the paste event script.");
+                };
+                timeoutHandler.postDelayed(timeoutRunnable, 15000); // 15초 타임아웃
+
+                // 수정: evaluateJavascriptWithCallback 대신 evaluateJavascriptInBackground 사용
+                serviceContext.evaluateJavascriptInBackground(pasteScript, result -> {
+                    // 타임아웃 콜백 제거
+                    timeoutHandler.removeCallbacks(timeoutRunnable);
+
+                    // 결과 문자열에서 따옴표 제거
+                    String cleanedResult = result != null ? result.replace("\"", "") : "";
+
+                    if ("PASTE_EVENT_DISPATCHED".equals(cleanedResult)) {
+                        Log.d(TAG, "Paste event dispatched successfully.");
+                        // 이미지 썸네일이 나타날 때까지 폴링
+                        pollForImageAndSubmitPrompt();
+                    } else {
+                        handleError("Failed to dispatch paste event: " + cleanedResult);
+                    }
+                });
             });
         } else {
             // 이미지가 없는 경우
+            Log.d("GeminiWebHelper", "Submitting prompt without image.");
             submitTextAndSend();
         }
     }
@@ -271,7 +306,7 @@ public class GeminiWebHelper {
                 "    if (!editorDiv) { return 'ERROR: Editor div not found.'; }" +
                 "    let pTag = editorDiv.querySelector('p');" +
                 "    if (!pTag) { pTag = document.createElement('p'); editorDiv.appendChild(pTag); }" +
-                "    pTag.textContent = " + escapedPrompt + ";" +
+                "    pTag.appendChild(document.createTextNode(' ' + " + escapedPrompt + "));" + // 수정: textContent를 appendChild로 변경하여 이미지 보존
                 "    const sendButton = findElement('button[aria-label=\"Send message\"], button[aria-label=\"메시지 보내기\"]');" + // 수정: Shadow DOM 탐색 함수 사용
                 "    if (!sendButton) { return 'ERROR: Send button not found.'; }" +
                 "    setTimeout(() => { sendButton.click(); }, 100);" + // 짧은 딜레이 후 클릭
@@ -311,12 +346,34 @@ public class GeminiWebHelper {
                     currentAttempt[0]++;
                     if (currentAttempt[0] > maxAttempts) {
                         Log.e(TAG, "Polling timed out waiting for new conversation container. Attempting to stop generation.");
-                        // 타임아웃 시 생성 중지 버튼을 클릭하여 멈춘 요청을 정리합니다.
-                        final String stopGenerationScript = "(function() {" +
-                                "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
-                                "    if (stopButton) { stopButton.click(); }" +
+                        // 수정: 타임아웃 시 생성 중지 및 입력창 초기화 스크립트 실행
+                        final String stopAndClearScript = "(function() {" +
+                                "    function findElement(selector, root = document.body) {" +
+                                "        const element = root.querySelector(selector);" +
+                                "        if (element) return element;" +
+                                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
+                                "        for (const shadowRoot of shadowRoots) {" +
+                                "            const found = findElement(selector, shadowRoot);" +
+                                "            if (found) return found;" +
+                                "        }" +
+                                "        return null;" +
+                                "    }" +
+                                "    const stopButton = findElement('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
+                                "    if (stopButton) {" +
+                                "        stopButton.click();" +
+                                "        setTimeout(() => {" +
+                                "            const editorDiv = findElement('rich-textarea .ql-editor');" +
+                                "            if (editorDiv) {" +
+                                "                while (editorDiv.firstChild) { editorDiv.removeChild(editorDiv.firstChild); }" +
+                                "                const pTag = document.createElement('p');" +
+                                "                const brTag = document.createElement('br');" +
+                                "                pTag.appendChild(brTag);" +
+                                "                editorDiv.appendChild(pTag);" +
+                                "            }" +
+                                "        }, 500);" +
+                                "    }" +
                                 "})();";
-                        serviceContext.evaluateJavascriptInBackground(stopGenerationScript, result -> {
+                        serviceContext.evaluateJavascriptInBackground(stopAndClearScript, result -> {
                             // 중지 시도 후 타임아웃 에러를 보고합니다.
                             handleError("Response timed out waiting for new conversation container.");
                         });
@@ -359,12 +416,34 @@ public class GeminiWebHelper {
                 currentAttempt[0]++;
                 if (currentAttempt[0] > maxAttempts) {
                     Log.e(TAG, "Timed out waiting for response generation to complete. Attempting to stop generation.");
-                    // 타임아웃 시 생성 중지 버튼을 클릭하여 멈춘 요청을 정리합니다.
-                    final String stopGenerationScript = "(function() {" +
-                            "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
-                            "    if (stopButton) { stopButton.click(); }" +
+                    // 수정: 타임아웃 시 생성 중지 및 입력창 초기화 스크립트 실행
+                    final String stopAndClearScript = "(function() {" +
+                            "    function findElement(selector, root = document.body) {" +
+                            "        const element = root.querySelector(selector);" +
+                            "        if (element) return element;" +
+                            "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
+                            "        for (const shadowRoot of shadowRoots) {" +
+                            "            const found = findElement(selector, shadowRoot);" +
+                            "            if (found) return found;" +
+                            "        }" +
+                            "        return null;" +
+                            "    }" +
+                            "    const stopButton = findElement('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
+                            "    if (stopButton) {" +
+                            "        stopButton.click();" +
+                            "        setTimeout(() => {" +
+                            "            const editorDiv = findElement('rich-textarea .ql-editor');" +
+                            "            if (editorDiv) {" +
+                            "                while (editorDiv.firstChild) { editorDiv.removeChild(editorDiv.firstChild); }" +
+                            "                const pTag = document.createElement('p');" +
+                            "                const brTag = document.createElement('br');" +
+                            "                pTag.appendChild(brTag);" +
+                            "                editorDiv.appendChild(pTag);" +
+                            "            }" +
+                            "        }, 500);" +
+                            "    }" +
                             "})();";
-                    serviceContext.evaluateJavascriptInBackground(stopGenerationScript, result -> {
+                    serviceContext.evaluateJavascriptInBackground(stopAndClearScript, result -> {
                         // 중지 시도 후 타임아웃 에러를 보고합니다.
                         handleError("Response generation timed out.");
                     });
@@ -374,7 +453,7 @@ public class GeminiWebHelper {
                 serviceContext.evaluateJavascriptInBackground(checkInProgressScript, isGenerating -> {
                     if ("true".equals(isGenerating)) {
                         Log.d("GeminiWebHelper", "Still generating response. Waiting... (" + currentAttempt[0] + "/" + maxAttempts + ")");
-                        handler.postDelayed(this, 1000L);
+                        handler.postDelayed(this, 500L);
                     } else {
                         Log.d("GeminiWebHelper", "Response generation complete. Extracting final response.");
                         extractFinalResponse();
@@ -417,28 +496,37 @@ public class GeminiWebHelper {
     }
 
     private void handleSuccess(String response) {
-        if (pendingCallback != null) {
-            pendingCallback.onSuccess(response);
-            pendingCallback = null;
+        // --- 수정: 콜백을 안전하게 처리하고 상태를 리셋합니다. ---
+        ModelResponseCallback callbackToNotify = this.pendingCallback;
+        this.pendingCallback = null; // 콜백 중복 호출 방지를 위해 즉시 null로 설정
+
+        if (callbackToNotify != null) {
+            callbackToNotify.onSuccess(response);
         }
         cleanup();
     }
 
     private void handleError(String error) {
-        if (pendingCallback != null) {
-            pendingCallback.onError(error);
-            pendingCallback = null;
+        // --- 수정: 콜백을 안전하게 처리하고 상태를 리셋합니다. ---
+        ModelResponseCallback callbackToNotify = this.pendingCallback;
+        this.pendingCallback = null; // 콜백 중복 호출 방지를 위해 즉시 null로 설정
+
+        if (callbackToNotify != null) {
+            callbackToNotify.onError(error);
         }
         cleanup();
     }
 
     private void cleanup() {
         // isAwaitingLoginCheck = false; // --- 제거 ---
-        // 리스너를 null로 설정하여 이 인스턴스가 더 이상 페이지 로드 이벤트를 받지 않도록 합니다.
-        if (serviceContext != null) {
-            // 리스너를 제거하는 대신, 다른 헬퍼가 리스너를 덮어쓸 수 있도록 그대로 둡니다.
-            serviceContext.setPageLoadListener(null);
-        }
+//        // 리스너를 null로 설정하여 이 인스턴스가 더 이상 페이지 로드 이벤트를 받지 않도록 합니다.
+//        if (serviceContext != null) {
+//            // 리스너를 제거하는 대신, 다른 헬퍼가 리스너를 덮어쓸 수 있도록 그대로 둡니다.
+//            serviceContext.setPageLoadListener(null);
+//        }
+        // --- 추가: 모든 작업 완료/실패 시 상태 플래그를 확실히 리셋합니다. ---
+        isAwaitingSubmission.set(false);
+        pendingCallback = null;
     }
 
     // --- 추가: GemmaManager와 동일한 격자 그리기 메서드 ---

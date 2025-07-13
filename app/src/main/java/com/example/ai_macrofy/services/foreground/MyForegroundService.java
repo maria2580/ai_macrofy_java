@@ -62,6 +62,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -125,8 +126,6 @@ public class MyForegroundService extends Service {
     private Handler mainThreadHandler;
     private BroadcastReceiver loginSuccessReceiver;
     private WindowManager windowManager;
-    private volatile boolean isWebViewAttached = false;
-    private volatile String webViewAttachmentError = null; // --- 추가: WebView 연결 오류 메시지 저장 ---
 
 
     @Override
@@ -141,19 +140,8 @@ public class MyForegroundService extends Service {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         Log.d("MyForegroundService", "onCreate");
 
-        // --- WebView 생성 및 설정 ---
+        // --- WebView 생성 및 설정 로직을 여기서 제거하고, 필요할 때 호출하도록 변경 ---
         mainThreadHandler = new Handler(Looper.getMainLooper());
-        mainThreadHandler.post(() -> {
-            Log.d("MyForegroundService", "Getting shared WebView on main thread.");
-            // SharedWebViewManager에서 WebView 인스턴스를 가져옵니다.
-            if(backgroundWebView == null) {
-                Log.d("MyForegroundService", "Getting new WebView instance."+SharedWebViewManager.isIsInitialized()+" available on shared:"+SharedWebViewManager.isWebViewAvailable()+ "  is Ready?"+SharedWebViewManager.isReady());
-                backgroundWebView = SharedWebViewManager.getWebView(this);
-            }
-            setupBackgroundWebView();
-            // 백그라운드 작업을 위해 WebView를 보이지 않는 창에 연결
-            attachWebViewToWindow();
-        });
 
         // --- 로그인 성공 BroadcastReceiver 등록 ---
         loginSuccessReceiver = new BroadcastReceiver() {
@@ -201,7 +189,7 @@ public class MyForegroundService extends Service {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                // Log.d("MyForegroundService", "Background WebView page finished loading: " + url); // --- 이 줄을 삭제합니다 ---
+                Log.d("MyForegroundService", "Background WebView page finished loading: " + url);
                 // --- 추가: 리스너가 있으면 로딩 완료 알림 ---
                 if (pageLoadListener != null) {
                     pageLoadListener.onPageFinished(view, url);
@@ -216,62 +204,20 @@ public class MyForegroundService extends Service {
             Log.d("MyForegroundService", "WebView is null. Skipping attachment to window.");
             return;
         }
-
-        if (backgroundWebView.getParent() != null) {
-            // 이미 다른 뷰에 연결되어 있거나(예: WebViewActivity) WebView가 준비되지 않은 경우
-            isWebViewAttached = true; // 이미 붙어있으면 준비된 것으로 간주
-            Log.d("MyForegroundService", "WebView is already attached to a parent. Marking as ready and skipping new attachment.");
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            Log.e("MyForegroundService", "Overlay permission not granted. Cannot attach WebView to window.");
-            mainHandler.post(() -> Toast.makeText(this, "Overlay permission needed for background web tasks.", Toast.LENGTH_LONG).show());
-            return;
-        }
-
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                1, 1, // 1x1 픽셀
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
-                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
-                        WindowManager.LayoutParams.TYPE_PHONE,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                PixelFormat.TRANSPARENT
-        );
-        params.gravity = Gravity.START | Gravity.TOP;
-        params.x = 0;
-        params.y = 0;
-
-        try {
-            windowManager.addView(backgroundWebView, params);
-            isWebViewAttached = true; // 성공적으로 추가됨
-            Log.d("MyForegroundService", "Attached background WebView to an invisible window.");
-        } catch (Exception e) {
-            Log.e("MyForegroundService", "Error attaching WebView to window", e);
-            isWebViewAttached = false; // 실패
-            webViewAttachmentError = e.getMessage(); // --- 추가: 오류 메시지 저장 ---
-        }
+        // --- 수정: SharedWebViewManager의 메서드 호출 ---
+        SharedWebViewManager.attachToWindow(this);
     }
 
     // --- 추가: 보이지 않는 창에서 WebView를 제거하는 메서드 ---
     private void removeWebViewFromWindow() {
-        if (backgroundWebView != null && backgroundWebView.isAttachedToWindow() && !(backgroundWebView.getParent() instanceof ViewGroup)) {
-            // 뷰가 창에 연결되어 있고 부모가 ViewGroup이 아니라면, WindowManager가 관리하는 뷰로 간주합니다.
-            try {
-                windowManager.removeView(backgroundWebView);
-                isWebViewAttached = false; // 제거됨
-                Log.d("MyForegroundService", "Removed background WebView from invisible window.");
-            } catch (Exception e) {
-                Log.e("MyForegroundService", "Error removing WebView from window", e);
-            }
-        }
+        // --- 수정: SharedWebViewManager의 메서드 호출 ---
+        SharedWebViewManager.detachFromWindow(this);
     }
 
     // --- 추가: WebView 준비 상태 확인 메서드 ---
     public boolean isWebViewReady() {
-        return backgroundWebView != null && isWebViewAttached;
+        // --- 수정: SharedWebViewManager의 isReady() 호출 ---
+        return SharedWebViewManager.isReady();
     }
 
     // --- 추가: 페이지 로딩 리스너 설정 메서드 ---
@@ -299,37 +245,6 @@ public class MyForegroundService extends Service {
         });
     }
 
-    // --- 추가: JavaScript에서 Android로 결과를 비동기적으로 보내기 위한 콜백 인터페이스 ---
-    public interface JavaScriptCallback {
-        void onResult(String result);
-    }
-
-    // --- 추가: JavaScript에서 window.androidCallback()을 호출하면 결과를 받는 메서드 ---
-    @SuppressLint("JavascriptInterface")
-    public void evaluateJavascriptWithCallback(String script, JavaScriptCallback callback) {
-        mainThreadHandler.post(() -> {
-            if (backgroundWebView != null) {
-                // 1. 자바스크립트 인터페이스 추가
-                backgroundWebView.addJavascriptInterface(new Object() {
-                    @android.webkit.JavascriptInterface
-                    public void postMessage(String result) {
-                        // JavaScript에서 보낸 결과를 메인 스레드에서 처리
-                        mainThreadHandler.post(() -> {
-                            // 사용 후 즉시 인터페이스 제거
-                            backgroundWebView.removeJavascriptInterface("androidCallbackBridge");
-                            callback.onResult(result);
-                        });
-                    }
-                }, "androidCallbackBridge");
-
-                // 2. window.androidCallback 함수를 정의하고, 원래 스크립트를 실행하는 래퍼 스크립트 생성
-                String wrapperScript = "window.androidCallback = function(result) { androidCallbackBridge.postMessage(result); };" + script;
-                backgroundWebView.evaluateJavascript(wrapperScript, null); // 결과는 콜백으로 오므로 여기서는 null
-            } else {
-                callback.onResult("ERROR: WebView is not available.");
-            }
-        });
-    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -454,28 +369,13 @@ public class MyForegroundService extends Service {
             // Gemini is remote, no special initialization needed, proceed directly.
             checkServicesAndStartMacro(0);
         } else if (AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName)) {
-            // --- 수정: WebView 사용 불가 시 재초기화 시도 로직 추가 ---
-            if (!SharedWebViewManager.isWebViewAvailable()) {
-                Log.w("MyForegroundService", "WebView was not available. Attempting to re-initialize...");
-                SharedWebViewManager.init(this); // 서비스 컨텍스트로 재초기화 시도
-                // 재초기화가 비동기로 처리되므로, 잠시 후 다시 확인
-                new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                    if (!SharedWebViewManager.isWebViewAvailable()) {
-                        Log.e("MyForegroundService", "WebView re-initialization failed. Cannot use Gemini Web provider.");
-                        mainHandler.post(() -> Toast.makeText(getApplicationContext(), "WebView is not available on this device.", Toast.LENGTH_LONG).show());
-                        stopMacroExecution();
-                    } else {
-                        Log.d("MyForegroundService", "WebView re-initialized successfully. Proceeding with macro.");
-                        initializeAiServiceAndStart(); // 성공했으므로 다시 이 메서드를 호출하여 정상 로직 진행
-                    }
-                }, 1000); // 1초 대기 후 확인
-                return; // 재초기화 시도 중에는 여기서 반환
-            }
-
-            currentAiModelService = new GeminiWebManager();
-            currentAiModelService.setContext(this);
-            // Web UI automation doesn't need an API key or special initialization.
-            checkServicesAndStartMacro(0);
+            // --- 수정: WebView 설정 로직을 이 블록으로 이동 ---
+            setupWebViewForGeminiWeb(() -> {
+                // WebView 설정이 완료된 후 AI 서비스 초기화 및 매크로 시작
+                currentAiModelService = new GeminiWebManager();
+                currentAiModelService.setContext(this);
+                checkServicesAndStartMacro(0);
+            });
         } else if (AppPreferences.PROVIDER_GEMMA_LOCAL.equals(currentAiProviderName)) {
             GemmaManager gemmaManager = GemmaManager.getInstance(this);
             currentAiModelService = gemmaManager;
@@ -507,17 +407,52 @@ public class MyForegroundService extends Service {
         }
     }
 
+    // --- 추가: Gemini Web을 위한 WebView 설정 전용 메서드 ---
+    private void setupWebViewForGeminiWeb(Runnable onComplete) {
+        mainThreadHandler.post(() -> {
+            // --- 수정: getWebView(this)를 호출하여 WebView 인스턴스를 안전하게 가져옵니다. ---
+            backgroundWebView = SharedWebViewManager.getWebView(this);
+
+            if (backgroundWebView == null) {
+                Log.e("MyForegroundService", "WebView initialization failed. Cannot use Gemini Web provider.");
+                mainHandler.post(() -> Toast.makeText(getApplicationContext(), "WebView is not available on this device.", Toast.LENGTH_LONG).show());
+                stopMacroExecution();
+                return;
+            }
+
+            setupBackgroundWebView();
+            attachWebViewToWindow();
+
+            // WebView가 준비될 때까지 폴링
+            final Handler handler = new Handler(Looper.getMainLooper());
+            final int maxAttempts = 10;
+            final int[] currentAttempt = {0};
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (isWebViewReady()) {
+                        Log.d("MyForegroundService", "WebView is ready for Gemini Web.");
+                        onComplete.run();
+                    } else {
+                        currentAttempt[0]++;
+                        if (currentAttempt[0] < maxAttempts) {
+                            Log.w("MyForegroundService", "Waiting for WebView to attach... Attempt " + currentAttempt[0]);
+                            handler.postDelayed(this, 200);
+                        } else {
+                            Log.e("MyForegroundService", "Timed out waiting for WebView to attach.");
+                            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "WebView setup timed out.", Toast.LENGTH_LONG).show());
+                            stopMacroExecution();
+                        }
+                    }
+                }
+            });
+        });
+    }
+
     private void checkServicesAndStartMacro(int attempt) {
         boolean webViewCheckNeeded = AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName);
 
-        // --- 추가: WebView 연결에 명시적인 오류가 발생했는지 먼저 확인 ---
-        if (webViewCheckNeeded && webViewAttachmentError != null) {
-            Log.e("MyForegroundService", "Failing macro due to WebView attachment error: " + webViewAttachmentError);
-            // 사용자에게 더 명확한 피드백 제공
-            mainHandler.post(() -> Toast.makeText(getApplicationContext(), "WebView setup failed. Check 'Draw over other apps' permission.", Toast.LENGTH_LONG).show());
-            stopMacroExecution(); // 매크로를 즉시 중단
-            return;
-        }
+        // --- WebView 연결 오류 확인 로직 제거 (isReady()가 처리) ---
 
         // --- 수정: gemini_web 제공자일 경우 WebView 준비 상태도 함께 확인 ---
         boolean webViewIsReady = !webViewCheckNeeded || isWebViewReady();
@@ -989,10 +924,10 @@ public class MyForegroundService extends Service {
     public void onDestroy() {
         Log.d("MyForegroundService", "onDestroy called for MyForegroundService.");
         isMacroRunning = false;
-        isWebViewAttached = false; // 서비스 종료 시 플래그 리셋
+        // isWebViewAttached = false; // --- 제거 ---
 
         // 서비스 종료 시 WebView 일시정지
-        SharedWebViewManager.onResume(); // onPause() 대신 onResume()을 호출하여 WebView가 활성 상태를 유지하도록 합니다.
+        SharedWebViewManager.onPause(); // --- 수정: onResume() 대신 onPause() 호출 ---
 
         if (timerHandler != null) {
             timerHandler.removeCallbacksAndMessages(null);
@@ -1006,17 +941,9 @@ public class MyForegroundService extends Service {
 
         // --- WebView 리소스 해제 (수정) ---
         // 서비스가 추가했던 보이지 않는 창에서 WebView를 제거합니다.
-        mainThreadHandler.post(() -> {
-            removeWebViewFromWindow();
-            // --- 추가: WebView 상태를 완전히 초기화하여 다음 매크로 실행 시 문제를 방지합니다. ---
-            if (backgroundWebView != null) {
-                Log.d("MyForegroundService", "Resetting WebView state for next use.");
-                backgroundWebView.stopLoading();
-                backgroundWebView.loadUrl("about:blank"); // 빈 페이지로 리셋
-                CookieManager.getInstance().removeAllCookies(null); // 모든 쿠키 삭제
-                CookieManager.getInstance().flush();
-            }
-        });
+        if (mainThreadHandler != null) { // --- 추가: 핸들러 null 체크 ---
+            mainThreadHandler.post(this::removeWebViewFromWindow);
+        }
 
         // Ensure all resources are released on destruction
         if (virtualDisplay != null) {
