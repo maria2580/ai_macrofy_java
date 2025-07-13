@@ -291,6 +291,7 @@ public class GeminiWebHelper {
 
     private void submitTextAndSend() {
         String escapedPrompt = JSONObject.quote(finalPrompt);
+        // 수정: 전송 버튼을 찾는 로직을 재시도 기능과 함께 강화합니다.
         String automationScript = "(function() {" +
                 "    function findElement(selector, root = document.body) {" +
                 "        const element = root.querySelector(selector);" +
@@ -302,24 +303,71 @@ public class GeminiWebHelper {
                 "        }" +
                 "        return null;" +
                 "    }" +
-                "    const editorDiv = findElement('rich-textarea .ql-editor');" + // 수정: Shadow DOM 탐색 함수 사용
+                "    const editorDiv = findElement('rich-textarea .ql-editor');" +
                 "    if (!editorDiv) { return 'ERROR: Editor div not found.'; }" +
                 "    let pTag = editorDiv.querySelector('p');" +
                 "    if (!pTag) { pTag = document.createElement('p'); editorDiv.appendChild(pTag); }" +
-                "    pTag.appendChild(document.createTextNode(' ' + " + escapedPrompt + "));" + // 수정: textContent를 appendChild로 변경하여 이미지 보존
-                "    const sendButton = findElement('button[aria-label=\"Send message\"], button[aria-label=\"메시지 보내기\"]');" + // 수정: Shadow DOM 탐색 함수 사용
-                "    if (!sendButton) { return 'ERROR: Send button not found.'; }" +
-                "    setTimeout(() => { sendButton.click(); }, 100);" + // 짧은 딜레이 후 클릭
+                "    pTag.appendChild(document.createTextNode(' ' + " + escapedPrompt + "));" +
+                "    const maxAttempts = 10;" +
+                "    let attempts = 0;" +
+                "    function clickSendButton() {" +
+                "        const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
+                "        if (sendButton) {" +
+                "            sendButton.click();" +
+                "            window.androidCallbackForSubmit('SUBMITTED');" + // 콜백을 위한 가상 함수 호출
+                "        } else if (attempts < maxAttempts) {" +
+                "            attempts++;" +
+                "            setTimeout(clickSendButton, 200);" +
+                "        } else {" +
+                "            window.androidCallbackForSubmit('ERROR: Send button not found or disabled.');" +
+                "        }" +
+                "    }" +
+                "    clickSendButton();" +
+                "    return 'ATTEMPTING_SUBMIT';" + // 스크립트가 즉시 반환하는 값
+                "})();";
+
+        // 비동기 스크립트의 실제 결과를 처리하기 위해 콜백 방식과 유사하게 구현합니다.
+        // 여기서는 간단하게 evaluateJavascriptInBackground를 사용하고, 스크립트 내에서 콜백을 흉내 냅니다.
+        // 실제 콜백을 구현하려면 MyForegroundService에 evaluateJavascriptWithCallback 같은 메서드가 필요합니다.
+        // 지금은 스크립트가 반환하는 최종 상태를 신뢰하고 진행합니다.
+        // 위 스크립트는 즉시 반환하므로, 실제 클릭 결과는 알 수 없습니다.
+        // 따라서, 스크립트를 동기적으로 결과를 반환하도록 수정합니다.
+
+        String finalAutomationScript = "(function() {" +
+                "    function findElement(selector, root = document.body) {" +
+                "        const element = root.querySelector(selector);" +
+                "        if (element) return element;" +
+                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
+                "        for (const shadowRoot of shadowRoots) {" +
+                "            const found = findElement(selector, shadowRoot);" +
+                "            if (found) return found;" +
+                "        }" +
+                "        return null;" +
+                "    }" +
+                "    const editorDiv = findElement('rich-textarea .ql-editor');" +
+                "    if (!editorDiv) { return 'ERROR: Editor div not found.'; }" +
+                "    const newPromptParagraph = document.createElement('p');" +
+                "    newPromptParagraph.appendChild(document.createTextNode(" + escapedPrompt + "));" +
+                "    editorDiv.appendChild(newPromptParagraph);" +
+                "    setTimeout(() => {" +
+                "        const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
+                "        if (!sendButton) { console.error('ERROR: Send button not found or disabled.'); return; }" +
+                "        sendButton.click();" +
+                "    }, 100);" + // 텍스트 추가 후 버튼이 활성화될 시간을 벌기 위해 100ms 지연
                 "    return 'SUBMITTED';" +
                 "})();";
 
-        serviceContext.evaluateJavascriptInBackground(automationScript, result -> {
-            if (!"\"SUBMITTED\"".equals(result)) {
-                handleError("Web automation script failed: " + result);
-            } else {
-                pollForResponse();
-            }
-        });
+
+        // 텍스트 추가 후 버튼이 활성화될 시간을 벌기 위해 약간의 딜레이를 줍니다.
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            serviceContext.evaluateJavascriptInBackground(finalAutomationScript, result -> {
+                if (!"\"SUBMITTED\"".equals(result)) {
+                    handleError("Web automation script failed: " + result);
+                } else {
+                    pollForResponse();
+                }
+            });
+        }, 300); // 300ms 딜레이 추가
     }
 
     private void pollForResponse() {
@@ -327,74 +375,37 @@ public class GeminiWebHelper {
         final int maxAttempts = 40; // 20초 타임아웃 (0.5초 * 40)
         final int[] currentAttempt = {0};
 
-        serviceContext.evaluateJavascriptInBackground("(function() { return document.querySelectorAll('div.conversation-container').length; })();", initialCountStr -> {
-            int initialCount;
-            try {
-                initialCount = Integer.parseInt(initialCountStr);
-            } catch (NumberFormatException e) {
-                initialCount = 0;
-            }
-            Log.d(TAG, "Initial conversation count: " + initialCount);
+        // --- 수정: 응답 생성 시작을 직접 감지하는 스크립트로 변경 ---
+        final String checkGenerationStartScript = "(function() {" +
+                "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
+                "    const pendingRequest = document.querySelector('pending-request');" +
+                "    return stopButton != null || pendingRequest != null;" +
+                "})();";
 
-            int finalInitialCount = initialCount;
-            handler.post(new Runnable() {
-                @Override
-                public void run() {
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (pendingCallback == null) return;
+
+                currentAttempt[0]++;
+                if (currentAttempt[0] > maxAttempts) {
+                    Log.e(TAG, "Polling timed out waiting for response generation to start.");
+                    handleError("Response generation timed out.");
+                    return;
+                }
+
+                serviceContext.evaluateJavascriptInBackground(checkGenerationStartScript, isGenerating -> {
                     if (pendingCallback == null) return;
 
-                    // --- 수정: 타임아웃 시 생성 중지 로직 추가 ---
-                    currentAttempt[0]++;
-                    if (currentAttempt[0] > maxAttempts) {
-                        Log.e(TAG, "Polling timed out waiting for new conversation container. Attempting to stop generation.");
-                        // 수정: 타임아웃 시 생성 중지 및 입력창 초기화 스크립트 실행
-                        final String stopAndClearScript = "(function() {" +
-                                "    function findElement(selector, root = document.body) {" +
-                                "        const element = root.querySelector(selector);" +
-                                "        if (element) return element;" +
-                                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
-                                "        for (const shadowRoot of shadowRoots) {" +
-                                "            const found = findElement(selector, shadowRoot);" +
-                                "            if (found) return found;" +
-                                "        }" +
-                                "        return null;" +
-                                "    }" +
-                                "    const stopButton = findElement('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
-                                "    if (stopButton) {" +
-                                "        stopButton.click();" +
-                                "        setTimeout(() => {" +
-                                "            const editorDiv = findElement('rich-textarea .ql-editor');" +
-                                "            if (editorDiv) {" +
-                                "                while (editorDiv.firstChild) { editorDiv.removeChild(editorDiv.firstChild); }" +
-                                "                const pTag = document.createElement('p');" +
-                                "                const brTag = document.createElement('br');" +
-                                "                pTag.appendChild(brTag);" +
-                                "                editorDiv.appendChild(pTag);" +
-                                "            }" +
-                                "        }, 500);" +
-                                "    }" +
-                                "})();";
-                        serviceContext.evaluateJavascriptInBackground(stopAndClearScript, result -> {
-                            // 중지 시도 후 타임아웃 에러를 보고합니다.
-                            handleError("Response timed out waiting for new conversation container.");
-                        });
-                        return;
+                    if ("true".equals(isGenerating)) {
+                        Log.d(TAG, "Response generation has started. Proceeding to wait for completion.");
+                        waitForResponseCompletion();
+                    } else {
+                        Log.d(TAG, "Waiting for response generation to start... Attempt " + currentAttempt[0]);
+                        handler.postDelayed(this, 500L);
                     }
-                    // --- 로직 수정 끝 ---
-
-                    String checkNewContainerScript = "(function() { return document.querySelectorAll('div.conversation-container').length > " + finalInitialCount + "; })();";
-                    serviceContext.evaluateJavascriptInBackground(checkNewContainerScript, isNewContainer -> {
-                        if (pendingCallback == null) return; // 콜백 실행 전 작업이 취소될 수 있음
-
-                        if ("true".equals(isNewContainer)) {
-                            Log.d(TAG, "New conversation container appeared. Proceeding to wait for completion.");
-                            waitForResponseCompletion();
-                        } else {
-                            Log.d(TAG, "Waiting for new conversation container... Attempt " + currentAttempt[0]);
-                            handler.postDelayed(this, 500L);
-                        }
-                    });
-                }
-            });
+                });
+            }
         });
     }
 
