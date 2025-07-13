@@ -21,7 +21,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 
-public class GeminiWebHelper implements MyForegroundService.PageLoadListener {
+public class GeminiWebHelper {
 
     private static final String TAG = "GeminiWebHelper";
     private static final String GEMINI_URL = "https://gemini.google.com";
@@ -31,12 +31,9 @@ public class GeminiWebHelper implements MyForegroundService.PageLoadListener {
     private String finalPrompt;
     private Bitmap pendingBitmap; // --- 추가: 비트맵 저장 ---
 
-    private boolean isAwaitingLoginCheck = false;
-
     public GeminiWebHelper(MyForegroundService serviceContext) {
         this.serviceContext = serviceContext;
-        // --- 추가: 생성자에서 PageLoadListener를 설정합니다. ---
-        this.serviceContext.setPageLoadListener(this);
+        // --- PageLoadListener 설정 로직 제거 ---
     }
 
     public void generateResponse(String finalPrompt, @Nullable Bitmap bitmap, ModelResponseCallback callback) {
@@ -44,7 +41,6 @@ public class GeminiWebHelper implements MyForegroundService.PageLoadListener {
         this.finalPrompt = finalPrompt;
         this.pendingBitmap = bitmap;
         this.pendingCallback = callback;
-        this.isAwaitingLoginCheck = true;
 
         waitForWebViewAndProceed();
     }
@@ -61,17 +57,8 @@ public class GeminiWebHelper implements MyForegroundService.PageLoadListener {
                 // --- 수정: SharedWebViewManager.isReady()를 직접 호출 ---
                 if (SharedWebViewManager.isReady()) {
                     Log.d(TAG, "WebView is ready. Proceeding to check/load URL.");
-                    WebView webView = SharedWebViewManager.getWebView();
-                    // --- 수정: URL 확인 및 로딩 로직 단순화 ---
-                    if (webView != null && webView.getUrl() != null && webView.getUrl().startsWith("https://gemini.google.com/app")) {
-                        // 이미 올바른 페이지에 있다면, onPageFinished를 직접 호출하여 로직을 시작합니다.
-                        Log.d(TAG, "Gemini app URL is already loaded. Triggering onPageFinished manually.");
-                        onPageFinished(webView, webView.getUrl());
-                    } else {
-                        // 그렇지 않다면, URL을 로드하고 WebViewClient의 onPageFinished 콜백을 기다립니다.
-                        Log.d(TAG, "Requesting to load Gemini URL. Waiting for onPageFinished callback from WebViewClient.");
-                        serviceContext.loadUrlInBackground(GEMINI_URL);
-                    }
+                    // --- 수정: URL 확인 및 로딩 로직을 loadUrlAndCheckLogin으로 위임 ---
+                    loadUrlAndCheckLogin();
                 } else {
                     currentAttempt[0]++;
                     if (currentAttempt[0] < maxAttempts) {
@@ -85,21 +72,23 @@ public class GeminiWebHelper implements MyForegroundService.PageLoadListener {
         });
     }
 
-    @Override
-    public void onPageFinished(WebView view, String url) {
-        if (!url.startsWith("https://gemini.google.com/app")) {
-            Log.d(TAG, "onPageFinished for non-final URL, ignoring: " + url);
-            return;
-        }
-        // isAwaitingLoginCheck 플래그를 사용하여 이 로직이 단 한 번만 실행되도록 보장합니다.
-        if (!isAwaitingLoginCheck) {
-            Log.d(TAG, "onPageFinished received, but not awaiting a login check. Ignoring.");
-            return;
-        }
-        isAwaitingLoginCheck = false; // 플래그를 내려 중복 실행 방지
-        Log.d(TAG, "onPageFinished received for the correct URL. Starting login check.");
-        checkLoginStatus();
+    // --- onPageFinished 메서드 제거 ---
+
+    // --- 추가: URL 로딩과 로그인 확인을 통합한 새 메서드 ---
+    private void loadUrlAndCheckLogin() {
+        serviceContext.setPageLoadListener((view, url) -> {
+            // 페이지 로드가 완료되면 (URL이 gemini.google.com/app 인 경우) 로그인 상태를 확인합니다.
+            if (url.startsWith("https://gemini.google.com/app")) {
+                Log.d(TAG, "Gemini app page finished loading. Checking login status.");
+                serviceContext.setPageLoadListener(null); // 리스너를 즉시 제거하여 중복 호출 방지
+                checkLoginStatus();
+            }
+        });
+        // 항상 Gemini URL을 로드하여 일관된 시작점을 보장합니다.
+        // WebView가 이미 해당 페이지에 있더라도 onPageFinished가 트리거됩니다.
+        serviceContext.loadUrlInBackground(GEMINI_URL);
     }
+
 
     private void checkLoginStatus() {
         String checkLoginScript = "(function() { " +
@@ -444,11 +433,11 @@ public class GeminiWebHelper implements MyForegroundService.PageLoadListener {
     }
 
     private void cleanup() {
-        isAwaitingLoginCheck = false;
+        // isAwaitingLoginCheck = false; // --- 제거 ---
         // 리스너를 null로 설정하여 이 인스턴스가 더 이상 페이지 로드 이벤트를 받지 않도록 합니다.
         if (serviceContext != null) {
             // 리스너를 제거하는 대신, 다른 헬퍼가 리스너를 덮어쓸 수 있도록 그대로 둡니다.
-            // serviceContext.setPageLoadListener(null);
+            serviceContext.setPageLoadListener(null);
         }
     }
 

@@ -33,6 +33,7 @@ import android.view.WindowManager;
 import android.view.WindowMetrics;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -47,6 +48,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
@@ -98,13 +100,29 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
+        // EdgeToEdge.enable(this); // Replaced with manual setup for more control
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         setContentView(R.layout.activity_main);
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
+
+        View mainView = findViewById(R.id.main);
+        // Store initial padding defined in the XML
+        final int initialPaddingLeft = mainView.getPaddingLeft();
+        final int initialPaddingTop = mainView.getPaddingTop();
+        final int initialPaddingRight = mainView.getPaddingRight();
+        final int initialPaddingBottom = mainView.getPaddingBottom();
+
+        ViewCompat.setOnApplyWindowInsetsListener(mainView, (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
+            // Apply the system insets as ADDITIONAL padding to respect the XML padding
+            v.setPadding(
+                    initialPaddingLeft + systemBars.left,
+                    initialPaddingTop + systemBars.top,
+                    initialPaddingRight + systemBars.right,
+                    initialPaddingBottom + systemBars.bottom
+            );
             return insets;
         });
+
         WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
 
         WindowMetrics windowMetrics = windowManager.getCurrentWindowMetrics();
@@ -120,7 +138,7 @@ public class MainActivity extends AppCompatActivity {
         textViewResult = findViewById(R.id.textView_result);
         textViewRecognizedPrompt = findViewById(R.id.textView_recognized_prompt);
         Button buttonRecordPrompt = findViewById(R.id.button_record_prompt);
-        Button buttonSettings = findViewById(R.id.button_settings);
+        ImageButton buttonSettings = findViewById(R.id.button_settings);
         textViewCurrentApiKeyStatus = findViewById(R.id.textView_current_api_key_status);
 
         Button buttonStartMacro = findViewById(R.id.button_start_macro);

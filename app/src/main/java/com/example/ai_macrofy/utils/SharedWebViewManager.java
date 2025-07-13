@@ -107,20 +107,17 @@ public class SharedWebViewManager {
         }
     }
     public static void attachWebView(ViewGroup parent) {
-        if (webView != null) {
-            new Handler(Looper.getMainLooper()).post(() -> {
-                // WebView가 이미 다른 부모에 붙어있다면, 먼저 제거합니다.
-                if (webView.getParent() instanceof ViewGroup) {
-                    Log.w(TAG, "WebView is already attached to a parent. Detaching first.");
-                    ((ViewGroup) webView.getParent()).removeView(webView);
-                }
-                Log.d(TAG, "Attaching shared WebView to new parent.");
-                parent.addView(webView, new ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT));
-            });
-        } else {
-            Log.e(TAG, "Cannot attach WebView, it is null.");
+        // --- 추가: WebView가 이미 다른 부모를 가지고 있는지 확인 ---
+        if (webView != null && webView.getParent() != null) {
+            // 이미 부모가 있다면, 먼저 기존 부모로부터 분리합니다.
+            // 이는 WebViewActivity에서 MainActivity로 돌아올 때 발생할 수 있습니다.
+            ((ViewGroup)webView.getParent()).removeView(webView);
+        }
+        if (parent != null && webView != null) {
+            parent.addView(webView, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            isWebViewAttached = true;
         }
     }
 

@@ -1,112 +1,172 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp">
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="AI Provider"
-        android:textSize="18sp"
-        android:layout_marginBottom="8dp"/>
-
-    <RadioGroup
-        android:id="@+id/radioGroup_ai_provider"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical">
-        <RadioButton
-            android:id="@+id/radioButton_openai"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="OpenAI GPT-4o-mini"/>
-        <RadioButton
-            android:id="@+id/radioButton_gemini"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Google Gemini (API)"/>
-        <RadioButton
-            android:id="@+id/radioButton_gemini_web"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Google Gemini (Web UI, Experimental)"/>
-        <RadioButton
-            android:id="@+id/radioButton_gemma_local"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Gemma (local, requires download)"/>
-    </RadioGroup>
+    android:background="?attr/colorSurface"
+    tools:context=".ui.SettingsActivity">
 
     <LinearLayout
-        android:id="@+id/layout_gemma_options"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:layout_marginStart="24dp"
-        android:layout_marginTop="8dp"
-        android:visibility="gone">
+        android:padding="16dp">
 
         <TextView
+            style="@style/TextAppearance.Material3.TitleLarge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Gemma Delegate"
-            android:textSize="16sp"/>
+            android:layout_marginBottom="16dp"
+            android:text="@string/settings_title"
+            android:textColor="?attr/colorOnSurface" />
 
-        <RadioGroup
-            android:id="@+id/radioGroup_gemma_delegate"
+        <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
-            <RadioButton
-                android:id="@+id/radioButton_gemma_cpu"
+            android:layout_marginBottom="16dp"
+            app:cardElevation="0dp"
+            app:strokeColor="?attr/colorOutline"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    style="@style/TextAppearance.Material3.TitleMedium"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:text="@string/ai_provider_title"
+                    android:textColor="?attr/colorOnSurface" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroup_ai_provider"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <RadioButton
+                        android:id="@+id/radioButton_openai"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/provider_openai" />
+
+                    <RadioButton
+                        android:id="@+id/radioButton_gemini"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/provider_gemini" />
+
+                    <RadioButton
+                        android:id="@+id/radioButton_gemma_local"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/provider_gemma_local" />
+
+                    <RadioButton
+                        android:id="@+id/radioButton_gemini_web"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/provider_gemini_web" />
+                </RadioGroup>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <LinearLayout
+            android:id="@+id/layout_api_keys"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/textInputLayout_openai_api_key"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:hint="@string/openai_api_key_hint"
+                app:passwordToggleEnabled="true">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/editText_openai_api_key_settings"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/textInputLayout_gemini_api_key"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:hint="@string/gemini_api_key_hint"
+                app:passwordToggleEnabled="true">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/editText_gemini_api_key_settings"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword" />
+            </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/layout_gemma_options"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                style="@style/TextAppearance.Material3.TitleMedium"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="CPU"/>
-            <RadioButton
-                android:id="@+id/radioButton_gemma_gpu"
-                android:layout_width="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="@string/gemma_options_title"
+                android:textColor="?attr/colorOnSurface" />
+
+            <RadioGroup
+                android:id="@+id/radioGroup_gemma_delegate"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="GPU"/>
-        </RadioGroup>
-    </LinearLayout>
+                android:orientation="horizontal">
 
-    <LinearLayout
-        android:id="@+id/layout_api_keys"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical">
-        <EditText
-            android:id="@+id/editText_openai_api_key_settings"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="OpenAI API Key"
-            android:layout_marginTop="16dp"
-            android:inputType="textPassword"/>
+                <RadioButton
+                    android:id="@+id/radioButton_gemma_cpu"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="16dp"
+                    android:text="@string/delegate_cpu" />
 
-        <EditText
-            android:id="@+id/editText_gemini_api_key_settings"
-            android:layout_width="match_parent"
+                <RadioButton
+                    android:id="@+id/radioButton_gemma_gpu"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/delegate_gpu" />
+            </RadioGroup>
+        </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_gemini_web_logout"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:hint="Google Gemini API Key"
+            android:layout_gravity="start"
             android:layout_marginTop="8dp"
-            android:inputType="textPassword"/>
+            android:text="@string/gemini_web_logout"
+            android:visibility="gone" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_save_settings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/save_settings" />
+
     </LinearLayout>
-
-    <Button
-        android:id="@+id/button_gemini_web_logout"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="Logout from Gemini (Web UI)"
-        android:visibility="gone"/>
-
-    <Button
-        android:id="@+id/button_save_settings"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="24dp"
-        android:text="Save Settings"/>
-</LinearLayout>
+</ScrollView>

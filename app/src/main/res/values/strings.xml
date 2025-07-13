@@ -3,4 +3,30 @@
     <string name="accessibility_service_description">Enables AI Macrofy to automate tasks.</string>
     <string name="accessibility_service_description_layout">This service allows AI Macrofy to read the screen layout to understand the context for automation.</string>
     <string name="accessibility_service_description_macro">This service allows AI Macrofy to perform gestures like tapping and scrolling to execute macros.</string>
+
+    <!-- Settings Activity -->
+    <string name="settings_title">Settings</string>
+    <string name="ai_provider_title">AI Provider</string>
+    <string name="provider_openai">OpenAI</string>
+    <string name="provider_gemini">Google Gemini (API)</string>
+    <string name="provider_gemma_local">Gemma (Local)</string>
+    <string name="provider_gemini_web">Gemini (Web UI)</string>
+    <string name="api_keys_title">API Keys</string>
+    <string name="openai_api_key_hint">OpenAI API Key</string>
+    <string name="gemini_api_key_hint">Gemini API Key</string>
+    <string name="gemma_options_title">Gemma Options</string>
+    <string name="gemma_delegate_title">Delegate</string>
+    <string name="delegate_cpu">CPU</string>
+    <string name="delegate_gpu">GPU</string>
+    <string name="gemini_web_logout">Logout from Gemini (Web UI)</string>
+    <string name="save_settings">Save Settings</string>
+
+    <!-- Main Activity -->
+    <string name="record_prompt_button">Record Prompt</string>
+    <string name="start_macro_button">Start Macro</string>
+    <string name="stop_macro_button">Stop Macro</string>
+    <string name="recognized_prompt_hint">Speak or type your command here…</string>
+    <string name="result_placeholder">Result will be shown here</string>
+    <string name="api_key_status_placeholder">API Key status</string>
+
 </resources>

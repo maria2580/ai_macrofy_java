@@ -4,5 +4,6 @@
     <item
         android:id="@+id/action_login_complete"
         android:title="Login Complete"
+        android:visible="false"
         app:showAsAction="ifRoom" />
 </menu>

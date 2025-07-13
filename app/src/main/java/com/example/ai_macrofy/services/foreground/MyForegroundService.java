@@ -992,7 +992,7 @@ public class MyForegroundService extends Service {
         isWebViewAttached = false; // 서비스 종료 시 플래그 리셋
 
         // 서비스 종료 시 WebView 일시정지
-        SharedWebViewManager.onPause();
+        SharedWebViewManager.onResume(); // onPause() 대신 onResume()을 호출하여 WebView가 활성 상태를 유지하도록 합니다.
 
         if (timerHandler != null) {
             timerHandler.removeCallbacksAndMessages(null);
@@ -1006,7 +1006,17 @@ public class MyForegroundService extends Service {
 
         // --- WebView 리소스 해제 (수정) ---
         // 서비스가 추가했던 보이지 않는 창에서 WebView를 제거합니다.
-        mainThreadHandler.post(this::removeWebViewFromWindow);
+        mainThreadHandler.post(() -> {
+            removeWebViewFromWindow();
+            // --- 추가: WebView 상태를 완전히 초기화하여 다음 매크로 실행 시 문제를 방지합니다. ---
+            if (backgroundWebView != null) {
+                Log.d("MyForegroundService", "Resetting WebView state for next use.");
+                backgroundWebView.stopLoading();
+                backgroundWebView.loadUrl("about:blank"); // 빈 페이지로 리셋
+                CookieManager.getInstance().removeAllCookies(null); // 모든 쿠키 삭제
+                CookieManager.getInstance().flush();
+            }
+        });
 
         // Ensure all resources are released on destruction
         if (virtualDisplay != null) {

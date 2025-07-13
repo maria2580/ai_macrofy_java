@@ -74,32 +74,39 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void updateUiForProvider(int checkedId) {
-        layoutApiKeys.setVisibility(View.VISIBLE);
-        buttonGeminiWebLogout.setVisibility(View.GONE);
-        layoutGemmaOptions.setVisibility(View.GONE);
+        boolean isGemmaLocal = (checkedId == R.id.radioButton_gemma_local);
+        boolean isGeminiWeb = (checkedId == R.id.radioButton_gemini_web);
 
-        if (checkedId == R.id.radioButton_gemma_local) {
-            layoutApiKeys.setVisibility(View.GONE);
-            layoutGemmaOptions.setVisibility(View.VISIBLE);
-        } else if (checkedId == R.id.radioButton_gemini_web) {
-            layoutApiKeys.setVisibility(View.GONE);
-            handleGeminiWebSelection();
+        layoutGemmaOptions.setVisibility(isGemmaLocal ? View.VISIBLE : View.GONE);
+        layoutApiKeys.setVisibility(isGemmaLocal || isGeminiWeb ? View.GONE : View.VISIBLE);
+        buttonGeminiWebLogout.setVisibility(isGeminiWeb && appPreferences.isGeminiWebLoggedIn() ? View.VISIBLE : View.GONE);
+
+        if (isGeminiWeb && !appPreferences.isGeminiWebLoggedIn()) {
+            // 로그인 상태가 아닐 때만 로그인 대화상자를 표시합니다.
+            showGeminiWebLoginDialog();
         }
     }
 
+    private void showGeminiWebLoginDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Login Required")
+                .setMessage("Gemini (Web UI) provider requires you to log in first. Would you like to log in now?")
+                .setPositiveButton("Login", (dialog, which) -> {
+                    startActivity(new Intent(this, WebViewActivity.class));
+                })
+                .setNegativeButton("No", (dialog, which) -> {
+                    // 사용자가 거부하면 이전에 선택했던 제공자로 되돌립니다.
+                    loadSettings();
+                })
+                .setCancelable(false)
+                .show();
+    }
+
     private void handleGeminiWebSelection() {
-        if (appPreferences.isGeminiWebLoggedIn()) {
-            buttonGeminiWebLogout.setVisibility(View.VISIBLE);
-        } else {
-            new AlertDialog.Builder(this)
-                    .setTitle("Login Required")
-                    .setMessage("Gemini (Web UI) provider requires you to log in first. Would you like to log in now?")
-                    .setPositiveButton("Login", (dialog, which) -> {
-                        startActivity(new Intent(this, WebViewActivity.class));
-                    })
-                    .setNegativeButton("No", null)
-                    .show();
-        }
+        // 이 메서드는 이제 updateUiForProvider에 의해 간접적으로 호출됩니다.
+        // 직접적인 호출은 제거되었지만, 명확성을 위해 남겨둘 수 있습니다.
+        // 혹은 관련 로직을 updateUiForProvider로 완전히 통합할 수 있습니다.
+        // 현재 구조에서는 updateUiForProvider가 모든 것을 처리합니다.
     }
 
     private void logoutFromGeminiWeb() {
