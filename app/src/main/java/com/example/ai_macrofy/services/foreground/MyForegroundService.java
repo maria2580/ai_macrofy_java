@@ -641,103 +641,75 @@ public class MyForegroundService extends Service {
 
                         Log.d("MyForegroundService", currentAiProviderName + " Raw Response: " + rawResponse);
 
-                        // Successful response, so reset the failure counter.
-                        resetFailureCounter();
-
-                        String pureJsonAction = null;
-
-                        // --- 수정: startsWith() 검사를 제거하고, JSON 파싱을 먼저 시도하도록 로직 변경 ---
-                        // 모든 응답에 대해 JSON 추출 및 파싱을 시도합니다.
-                        String cleanedResponse = rawResponse.trim();
-                        if (cleanedResponse.startsWith("```json")) {
-                            cleanedResponse = cleanedResponse.substring(7);
-                            if (cleanedResponse.endsWith("```")) {
-                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
-                            }
-                        } else if (cleanedResponse.startsWith("```")) {
-                            cleanedResponse = cleanedResponse.substring(3);
-                            if (cleanedResponse.endsWith("```")) {
-                                cleanedResponse = cleanedResponse.substring(0, cleanedResponse.length() - 3);
-                            }
-                        }
-                        // Gemini Web UI에서 오는 'JSON' 접두사 제거
-                        if (cleanedResponse.startsWith("JSON")) {
-                            cleanedResponse = cleanedResponse.substring(4);
-                        }
-                        cleanedResponse = cleanedResponse.trim();
-
-                        String jsonObjectRegexString = "\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}";
-                        Pattern pattern = Pattern.compile(jsonObjectRegexString);
-                        Matcher matcher = pattern.matcher(cleanedResponse);
-
-                        if (matcher.find()) {
-                            pureJsonAction = matcher.group(0);
-                            Log.d("MyForegroundService", "Extracted JSON: " + pureJsonAction);
-                        }
-
-
-                        if (pureJsonAction == null) {
-                            Log.e("MyForegroundService", "Could not extract JSON from " + currentAiProviderName + " response after cleaning. Cleaned: " + rawResponse.substring(0, Math.min(rawResponse.length(), 200)));
-                            // --- 수정: JSON 추출 실패 시, Gemini Web 제공자일 경우 피드백을 보내고 재시도 ---
-                            if (AppPreferences.PROVIDER_GEMINI_WEB.equals(currentAiProviderName)) {
-                                String feedback = "The previous response was not in the required JSON format. Your response MUST only be a valid JSON object. The invalid response was: " + rawResponse;
-                                addExecutionFeedbackToHistory(feedback);
+                        String jsonResponse = rawResponse.trim();
+                        // Find the start of the JSON object, ignoring any prefixes like "JSON" or markdown backticks
+                        int jsonStart = jsonResponse.indexOf('{');
+                        if (jsonStart != -1) {
+                            // Find the last closing brace
+                            int jsonEnd = jsonResponse.lastIndexOf('}');
+                            if (jsonEnd > jsonStart) {
+                                jsonResponse = jsonResponse.substring(jsonStart, jsonEnd + 1);
                             } else {
-                                addExecutionFeedbackToHistory("LLM response parsing failed: Could not extract JSON. Cleaned response (first 200 chars): " + rawResponse.substring(0, Math.min(rawResponse.length(),200)));
+                                 // Malformed response, couldn't find closing brace
+                                jsonStart = -1; // Mark as not found
                             }
-                            scheduleNextMacroStep(actionFailureRetryDelay);
-                            return;
                         }
 
-                        // --- JSON 유효성 검사 및 재시도 로직 추가 ---
+                        if (jsonStart == -1) {
+                             Log.e("MyForegroundService", "Could not extract valid JSON from model response.");
+                             handleFailure("LLM response did not contain a valid JSON object.");
+                             scheduleNextMacroStep(actionFailureRetryDelay);
+                             return; // Stop processing this response
+                        }
+
+                        // Clean up newline characters that can break parsing, as suggested by user feedback.
+                        jsonResponse = jsonResponse.replace("\n", "").replace("\r", "");
+
+
+                        Log.d("MyForegroundService", "Extracted JSON: " + jsonResponse);
+
                         try {
-                            JSONObject parsedJson = new JSONObject(pureJsonAction);
-                            // 모델이 {"type":...} 와 같이 actions 배열을 생략하고 내용물만 반환했는지 확인
+                            // Successful response, so reset the failure counter.
+                            resetFailureCounter();
+
+                            JSONObject parsedJson = new JSONObject(jsonResponse);
+                            String finalJsonString = jsonResponse;
+
+                            // Handle cases where the model returns a single action object instead of an array
                             if (!parsedJson.has("actions") && parsedJson.has("type")) {
                                 Log.w("MyForegroundService", "Response missing 'actions' wrapper. Reconstructing JSON.");
-                                // actions 배열을 만들고 기존 객체를 추가
                                 JSONArray actionsArray = new JSONArray();
                                 actionsArray.put(parsedJson);
-                                // 새로운 JSON 객체를 생성하여 actions 배열을 넣음
                                 JSONObject reconstructedJson = new JSONObject();
+                                if (parsedJson.has("analysis")) {
+                                    reconstructedJson.put("analysis", parsedJson.getString("analysis"));
+                                }
+                                 if (parsedJson.has("observation")) {
+                                    reconstructedJson.put("observation", parsedJson.getJSONArray("observation"));
+                                }
                                 reconstructedJson.put("actions", actionsArray);
-                                pureJsonAction = reconstructedJson.toString();
-                                Log.d("MyForegroundService", "Reconstructed JSON: " + pureJsonAction);
+                                finalJsonString = reconstructedJson.toString();
+                                Log.d("MyForegroundService", "Reconstructed JSON: " + finalJsonString);
                             }
+
+                            // Add to chat history
+                            String inputContextForHistory = "[SCREENSHOT] + User Command: " + currentUserCommand;
+                            chatHistory.add(new ChatMessage("user", inputContextForHistory));
+                            chatHistory.add(new ChatMessage("assistant", finalJsonString));
+                            limitChatHistory();
+
+                            // Execute actions
+                            if (MacroAccessibilityService.instance != null) {
+                                MacroAccessibilityService.instance.executeActionsFromJson(finalJsonString);
+                            } else {
+                                Log.e("MyForegroundService", "MacroAccessibilityService instance is null. Cannot execute actions.");
+                                handleFailure("Internal Error: MacroAccessibilityService not available.");
+                                scheduleNextMacroStep(actionFailureRetryDelay);
+                            }
+
                         } catch (JSONException e) {
-                            Log.e("MyForegroundService", "JSON parsing failed for extracted string: " + e.getMessage());
-                            // 모델에게 수정을 요청하는 피드백을 추가합니다.
-                            String feedback = "JSON parsing failed. The response was not valid JSON. Please correct the format and provide a valid JSON object. Error: " + e.getMessage() + ". The invalid response was: " + pureJsonAction;
-                            addExecutionFeedbackToHistory(feedback);
-                            // 즉시 다음 스텝을 예약하여 수정된 프롬프트로 재요청합니다.
-                            scheduleNextMacroStep(actionFailureRetryDelay);
-                            return; // 여기서 처리를 중단하고 재시도를 기다립니다.
-                        }
-                        // --- 로직 추가 끝 ---
-
-
-                        // For history, we need a text representation of the input
-                        String inputContextForHistory;
-                        if (bitmap != null) {
-                            // 수정: 첫 요청이 아닐 경우 User Command를 포함하지 않도록 수정합니다.
-                            inputContextForHistory = "[SCREENSHOT] + User Command: " + commandForLlm;
-                        } else {
-                            // This path is less likely now
-                            inputContextForHistory = "User Command: " + commandForLlm + "\n" +
-                                    "Current Screen Layout JSON:\n" + (jsonLayout != null ? jsonLayout : "{}");
-                        }
-
-
-                        chatHistory.add(new ChatMessage("user", inputContextForHistory));
-                        chatHistory.add(new ChatMessage("assistant", pureJsonAction));
-                        limitChatHistory();
-
-
-                        if (MacroAccessibilityService.instance != null) {
-                            MacroAccessibilityService.instance.executeActionsFromJson(pureJsonAction);
-                        } else {
-                            Log.e("MyForegroundService", "MacroAccessibilityService instance is null. Cannot execute actions.");
-                            addExecutionFeedbackToHistory("Internal Error: MacroAccessibilityService not available.");
+                            Log.e("MyForegroundService", "JSON parsing failed for extracted string: " + jsonResponse, e);
+                            handleFailure("LLM response was not valid JSON. " + e.getMessage());
                             scheduleNextMacroStep(actionFailureRetryDelay);
                         }
                     }

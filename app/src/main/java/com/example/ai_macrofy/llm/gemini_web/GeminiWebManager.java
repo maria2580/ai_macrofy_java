@@ -57,10 +57,13 @@ public class GeminiWebManager implements AiModelService {
         executor.execute(() -> {
             String finalPrompt = buildFinalPrompt(systemInstruction, conversationHistory, currentUserVoiceCommand);
 
-            // --- 수정: isFirstRequest 플래그를 사용하여 첫 요청과 후속 요청을 분기합니다. ---
+            // --- 수정: isFirstRequest 플래그를 사용하여 첫 요청 시에만 대화 기록을 리셋합니다. ---
             if (isFirstRequest) {
-                Log.d(TAG, "This is the first request. Starting full sequence with URL load and login check.");
+                Log.d(TAG, "This is the first request. Resetting conversation tracking and starting full sequence.");
                 isFirstRequest = false; // 다음 요청부터는 다른 분기를 타도록 플래그를 변경합니다.
+                if (webHelper != null) {
+                    webHelper.resetConversationTracking(); // 새 매크로 세션을 위해 ID 추적 리셋
+                }
                 webHelper.generateResponse(finalPrompt, currentScreenBitmap, callback);
             } else {
                 Log.d(TAG, "This is a subsequent request. Submitting prompt directly without reloading the page.");
