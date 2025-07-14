@@ -24,9 +24,6 @@ public class MainApplication extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
-        // 앱 시작 시 공유 WebView를 안정적으로 초기화합니다.
-        // 이 작업은 UI 스레드에서 WebView를 생성하므로 앱 전체에서 안전하게 사용할 수 있습니다.
-        SharedWebViewManager.init(this);
 
         // 앱 시작 시 백그라운드 스레드에서 앱 목록을 캐싱합니다.
         new Thread(this::cacheAppList).start();
