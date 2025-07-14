@@ -15,12 +15,7 @@ import com.example.ai_macrofy.llm.common.ModelResponseCallback;
 import com.example.ai_macrofy.services.foreground.MyForegroundService;
 import com.example.ai_macrofy.utils.SharedWebViewManager;
 
-import org.json.JSONObject;
-
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.util.concurrent.atomic.AtomicBoolean; // --- 추가 ---
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GeminiWebHelper {
 
@@ -30,8 +25,8 @@ public class GeminiWebHelper {
     private final MyForegroundService serviceContext;
     private ModelResponseCallback pendingCallback;
     private String finalPrompt;
-    private Bitmap pendingBitmap; // --- 추가: 비트맵 저장 ---
-    private final AtomicBoolean isAwaitingSubmission = new AtomicBoolean(false); // --- 추가: 제출 대기 상태 플래그 ---
+    private Bitmap pendingBitmap;
+    private final AtomicBoolean isRequestInProgress = new AtomicBoolean(false);
 
     public GeminiWebHelper(MyForegroundService serviceContext) {
         this.serviceContext = serviceContext;
@@ -39,7 +34,7 @@ public class GeminiWebHelper {
     }
 
     public void generateResponse(String finalPrompt, @Nullable Bitmap bitmap, ModelResponseCallback callback) {
-        logCurrentWebViewUrl(); // --- 추가: 현재 URL 로깅 ---
+        logCurrentWebViewUrl();
         this.finalPrompt = finalPrompt;
         this.pendingBitmap = bitmap;
         this.pendingCallback = callback;
@@ -57,10 +52,8 @@ public class GeminiWebHelper {
         handler.post(new Runnable() {
             @Override
             public void run() {
-                // --- 수정: SharedWebViewManager.isReady()를 직접 호출 ---
                 if (SharedWebViewManager.isReady()) {
-                    Log.d(TAG, "WebView is ready. Proceeding to check/load URL.");
-                    // --- 수정: URL 확인 및 로딩 로직을 loadUrlAndCheckLogin으로 위임 ---
+                    Log.d(TAG, "WebView is ready. Proceeding to load URL and check login.");
                     loadUrlAndCheckLogin();
                 } else {
                     currentAttempt[0]++;
@@ -112,17 +105,17 @@ public class GeminiWebHelper {
         final int maxAttempts = 5;
         final int[] currentAttempt = {0};
 
-        handler.post(new Runnable() {
+        Runnable checkRunnable = new Runnable() {
             @Override
             public void run() {
-                if (pendingCallback == null && !isAwaitingSubmission.get()) { // --- 수정: 제출 대기 상태도 확인 ---
-                    Log.d(TAG, "Login check stopped, callback is null and not awaiting submission.");
+                if (pendingCallback == null && !isRequestInProgress.get()) {
+                    Log.d(TAG, "Login check stopped, callback is null and not in progress.");
                     return;
                 }
                 currentAttempt[0]++;
                 Log.d(TAG, "Checking for login... Attempt " + currentAttempt[0] + "/" + maxAttempts);
                 serviceContext.evaluateJavascriptInBackground(checkLoginScript, loginStatus -> {
-                    if (pendingCallback == null && !isAwaitingSubmission.get()) return; // --- 수정: 제출 대기 상태도 확인 ---
+                    if (pendingCallback == null && !isRequestInProgress.get()) return;
 
                     if ("\"LOGGED_IN\"".equals(loginStatus)) {
                         Log.d(TAG, "User is logged in. Proceeding to submit prompt.");
@@ -142,111 +135,85 @@ public class GeminiWebHelper {
                     }
                 });
             }
-        });
+        };
+        handler.post(checkRunnable);
     }
 
     public void submitPrompt(String finalPrompt, @Nullable Bitmap bitmap, ModelResponseCallback callback) {
-        // --- 수정: isAwaitingSubmission 플래그를 사용하여 중복 호출을 더 안정적으로 방지합니다. ---
-        if (!isAwaitingSubmission.compareAndSet(false, true)) {
-            Log.w(TAG, "WARNING: submitPrompt called while another request is pending or already in submission queue!");
-            // --- 추가: 이전 요청이 멈춘 경우, 에러 처리하고 새 요청을 위해 상태를 리셋합니다. ---
-            if (this.pendingCallback != null) {
-                Log.e(TAG, "Force-failing previous stuck request.");
-                handleError("New request arrived, cancelling the previous one.");
-                // 재시도를 위해 잠시 후 다시 submitPrompt를 호출하도록 유도할 수 있으나,
-                // 여기서는 일단 이전 요청을 정리하고 새 요청은 무시하여 시스템 안정을 우선합니다.
-            }
-            // --- 수정: 이미 다른 요청이 처리 중일 때, 현재 콜백을 덮어쓰지 않고 즉시 반환합니다. ---
-            if (this.pendingCallback != callback) {
-                 Log.w(TAG, "A different callback was provided. The original request will proceed. The new request is ignored.");
+        if (!isRequestInProgress.compareAndSet(false, true)) {
+            Log.w(TAG, "Submission in progress. Ignoring new request.");
+            if (callback != null) {
+                // Immediately notify the new caller that its request was ignored.
+                new Handler(Looper.getMainLooper()).post(() -> callback.onError("Another request is already in progress. Please try again."));
             }
             return;
         }
-        Log.d(TAG, "submitPrompt called. Setting new callback and proceeding.");
-        
-        // --- 수정: 파라미터 설정 로직을 플래그 확인 후로 이동 ---
+
+        Log.d(TAG, "Request lock acquired. Setting new callback and proceeding.");
         this.finalPrompt = finalPrompt;
         this.pendingBitmap = bitmap;
         this.pendingCallback = callback; // --- 수정: submitPrompt에서도 콜백을 설정하도록 복원 ---
 
         if (pendingBitmap != null) {
-            Log.d("GeminiWebHelper", "Submitting prompt with image.");
-            // --- 수정: 파일 업로드 대신 붙여넣기(paste) 방식으로 변경 ---
-            // 1. 비트맵에 격자를 그리고 Base64 문자열로 변환
-            Bitmap bitmapWithGrid = drawGridOnBitmap(pendingBitmap);
-            java.io.ByteArrayOutputStream byteArrayOutputStream = new java.io.ByteArrayOutputStream();
-            bitmapWithGrid.compress(Bitmap.CompressFormat.PNG, 100, byteArrayOutputStream);
-            byte[] byteArray = byteArrayOutputStream.toByteArray();
-            String base64Image = android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP);
-
-            // 2. Base64 이미지를 사용하여 붙여넣기 이벤트를 시뮬레이션하는 JavaScript 생성
-            String pasteScript = "(function() {" +
-                "    function findElement(selector, root = document.body) {" +
-                "        const element = root.querySelector(selector);" +
-                "        if (element) return element;" +
-                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
-                "        for (const shadowRoot of shadowRoots) {" +
-                "            const found = findElement(selector, shadowRoot);" +
-                "            if (found) return found;" +
-                "        }" +
-                "        return null;" +
-                "    }" +
-                "    const target = findElement('rich-textarea .ql-editor');" +
-                "    if (!target) { return 'ERROR: Prompt input area (.ql-editor) not found.'; }" +
-                "    const base64Data = '" + base64Image + "';" +
-                "    try {" +
-                "        const byteCharacters = atob(base64Data);" +
-                "        const byteNumbers = new Array(byteCharacters.length);" +
-                "        for (let i = 0; i < byteCharacters.length; i++) {" +
-                "            byteNumbers[i] = byteCharacters.charCodeAt(i);" +
-                "        }" +
-                "        const byteArray = new Uint8Array(byteNumbers);" +
-                "        const blob = new Blob([byteArray], {type: 'image/png'});" +
-                "        const dataTransfer = new DataTransfer();" +
-                "        dataTransfer.items.add(new File([blob], 'screenshot.png', {type: 'image/png'}));" +
-                "        const pasteEvent = new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true });" +
-                "        target.dispatchEvent(pasteEvent);" +
-                "        return 'PASTE_EVENT_DISPATCHED';" + // 수정: window.androidCallback 대신 직접 반환
-                "    } catch (e) { return 'ERROR: ' + e.message; }" + // 수정: window.androidCallback 대신 직접 반환
-                "})();";
-
-            // --- 수정: 스크립트 실행과 타임아웃을 자체 핸들러에서 관리하여 안정성 확보 ---
-            new Handler(Looper.getMainLooper()).post(() -> {
-                // Paste 이벤트 타임아웃 핸들러
-                final Handler timeoutHandler = new Handler(Looper.getMainLooper());
-                final Runnable timeoutRunnable = () -> {
-                    Log.e(TAG, "Timeout waiting for paste event callback. The operation may be stuck.");
-                    handleError("Timeout: Failed to get a response from the paste event script.");
-                };
-                timeoutHandler.postDelayed(timeoutRunnable, 15000); // 15초 타임아웃
-
-                // 수정: evaluateJavascriptWithCallback 대신 evaluateJavascriptInBackground 사용
-                serviceContext.evaluateJavascriptInBackground(pasteScript, result -> {
-                    // 타임아웃 콜백 제거
-                    timeoutHandler.removeCallbacks(timeoutRunnable);
-
-                    // 결과 문자열에서 따옴표 제거
-                    String cleanedResult = result != null ? result.replace("\"", "") : "";
-
-                    if ("PASTE_EVENT_DISPATCHED".equals(cleanedResult)) {
-                        Log.d(TAG, "Paste event dispatched successfully.");
-                        // 이미지 썸네일이 나타날 때까지 폴링
-                        pollForImageAndSubmitPrompt();
-                    } else {
-                        handleError("Failed to dispatch paste event: " + cleanedResult);
-                    }
-                });
-            });
+            submitImageAndPrompt();
         } else {
-            // 이미지가 없는 경우
-            Log.d("GeminiWebHelper", "Submitting prompt without image.");
             submitTextAndSend();
         }
     }
 
+    private void submitImageAndPrompt() {
+        Log.d(TAG, "Submitting prompt with image.");
+        Bitmap bitmapWithGrid = drawGridOnBitmap(pendingBitmap);
+        java.io.ByteArrayOutputStream byteArrayOutputStream = new java.io.ByteArrayOutputStream();
+        bitmapWithGrid.compress(Bitmap.CompressFormat.PNG, 100, byteArrayOutputStream);
+        byte[] byteArray = byteArrayOutputStream.toByteArray();
+        String base64Image = android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP);
+
+            // 2. Base64 이미지를 사용하여 붙여넣기 이벤트를 시뮬레이션하는 JavaScript 생성
+        String pasteScript = "(function() {" +
+            "    function findElement(selector, root = document.body) {" +
+            "        const element = root.querySelector(selector);" +
+            "        if (element) return element;" +
+            "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
+            "        for (const shadowRoot of shadowRoots) {" +
+            "            const found = findElement(selector, shadowRoot);" +
+            "            if (found) return found;" +
+            "        }" +
+            "        return null;" +
+            "    }" +
+            "    const target = findElement('rich-textarea .ql-editor');" +
+            "    if (!target) { return 'ERROR: Prompt input area not found.'; }" +
+            "    const base64Data = '" + base64Image + "';" +
+            "    try {" +
+            "        const byteCharacters = atob(base64Data);" +
+            "        const byteNumbers = new Array(byteCharacters.length);" +
+            "        for (let i = 0; i < byteCharacters.length; i++) {" +
+            "            byteNumbers[i] = byteCharacters.charCodeAt(i);" +
+            "        }" +
+            "        const byteArray = new Uint8Array(byteNumbers);" +
+            "        const blob = new Blob([byteArray], {type: 'image/png'});" +
+            "        const dataTransfer = new DataTransfer();" +
+            "        dataTransfer.items.add(new File([blob], 'screenshot.png', {type: 'image/png'}));" +
+            "        const pasteEvent = new ClipboardEvent('paste', { clipboardData: dataTransfer, bubbles: true, cancelable: true });" +
+            "        target.dispatchEvent(pasteEvent);" +
+            "        return 'PASTE_EVENT_DISPATCHED';" +
+            "    } catch (e) { return 'ERROR: ' + e.message; }" +
+            "})();";
+
+        serviceContext.evaluateJavascriptInBackground(pasteScript, result -> {
+            String cleanedResult = result != null ? result.replace("\"", "") : "";
+            if ("PASTE_EVENT_DISPATCHED".equals(cleanedResult)) {
+                Log.d(TAG, "Paste event dispatched successfully.");
+                pollForImageAndSubmitPrompt();
+            } else {
+                handleError("Failed to dispatch paste event: " + cleanedResult);
+            }
+        });
+    }
+
     private void pollForImageAndSubmitPrompt() {
         final Handler handler = new Handler(Looper.getMainLooper());
-        final int maxAttempts = 25; // 12.5초 타임아웃
+        final int maxAttempts = 25; // 12.5 seconds timeout
         final int[] currentAttempt = {0};
 
         // --- 수정: Shadow DOM을 재귀적으로 탐색하고 명확한 상태를 반환하는 스크립트로 변경 ---
@@ -268,7 +235,7 @@ public class GeminiWebHelper {
                 "    return 'COMPLETED';" +
                 "})();";
 
-        handler.post(new Runnable() {
+        Runnable pollRunnable = new Runnable() {
             @Override
             public void run() {
                 if (pendingCallback == null) return; // 작업 취소됨
@@ -276,7 +243,7 @@ public class GeminiWebHelper {
                 serviceContext.evaluateJavascriptInBackground(checkImageScript, result -> {
                     // --- 수정: 3가지 상태(COMPLETED, UPLOADING, NOT_FOUND)를 처리하도록 로직 개선 ---
                     if ("\"COMPLETED\"".equals(result)) {
-                        Log.d(TAG, "Image upload completed. Proceeding to submit prompt.");
+                        Log.d(TAG, "Image upload completed. Proceeding to submit prompt text.");
                         submitTextAndSend();
                     } else if (currentAttempt[0] < maxAttempts) {
                         Log.d(TAG, "Waiting for image upload... Status: " + (result != null ? result : "null") + ", Attempt " + currentAttempt[0]);
@@ -286,10 +253,162 @@ public class GeminiWebHelper {
                     }
                 });
             }
+        };
+        handler.post(pollRunnable);
+    }
+
+    private void submitTextAndSend() {
+        String escapedPrompt = escapeForJsString(finalPrompt);
+        String finalAutomationScript =
+                "(function() {" +
+                "    function findElement(selector, root = document.body) {" +
+                "        const element = root.querySelector(selector);" +
+                "        if (element) return element;" +
+                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
+                "        for (const shadowRoot of shadowRoots) {" +
+                "            const found = findElement(selector, shadowRoot);" +
+                "            if (found) return found;" +
+                "        }" +
+                "        return null;" +
+                "    }" +
+                // First, check if a response is already generating and stop it.
+                "    const stopButton = findElement('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
+                "    if (stopButton && !stopButton.disabled) {" +
+                "        stopButton.click();" +
+                "        return;" +
+                "    }" +
+                // If not generating, proceed with submission.
+                "    const editorDiv = findElement('rich-textarea .ql-editor');" +
+                "    if (!editorDiv) { return; }" +
+                "    let p = editorDiv.querySelector('p');" +
+                "    if (!p) { p = document.createElement('p'); editorDiv.appendChild(p); }" +
+                "    while (p.firstChild) { p.removeChild(p.firstChild); }" +
+                "    p.appendChild(document.createTextNode(" + escapedPrompt + "));" +
+                // Wait a moment for the send button to become enabled after text is inserted.
+                "    setTimeout(function() {" +
+                "        const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
+                "        if (sendButton) {" +
+                "            sendButton.click();" +
+                "        }" +
+                "    }, 100);" +
+                "})();";
+
+        // We execute the script and optimistically assume it worked.
+        // Then we immediately start polling for the response generation state.
+        serviceContext.evaluateJavascriptInBackground(finalAutomationScript, result -> {
+            Log.d(TAG, "Submission script executed. Starting to poll for response.");
+            pollForResponse();
         });
     }
 
-    // JS 문자열 리터럴로 안전하게 이스케이프하는 함수 추가
+    private void pollForResponse() {
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final int maxAttempts = 40; // 20 seconds timeout
+        final int[] currentAttempt = {0};
+
+        // --- 수정: 응답 생성 시작을 직접 감지하는 스크립트로 변경 ---
+        final String checkGenerationStartScript = "(function() {" +
+                "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
+                "    const pendingRequest = document.querySelector('pending-request');" +
+                "    return stopButton != null || pendingRequest != null;" +
+                "})();";
+
+        Runnable pollRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (pendingCallback == null) return;
+
+                currentAttempt[0]++;
+                if (currentAttempt[0] > maxAttempts) {
+                    Log.e(TAG, "Timed out waiting for response generation to start.");
+                    handleError("Response generation timed out.");
+                    return;
+                }
+
+                serviceContext.evaluateJavascriptInBackground(checkGenerationStartScript, isGenerating -> {
+                    if (pendingCallback == null) return;
+
+                    if ("true".equals(isGenerating)) {
+                        Log.d(TAG, "Response generation has started. Waiting for completion.");
+                        waitForResponseCompletion();
+                    } else {
+                        Log.d(TAG, "Waiting for response generation to start... Attempt " + currentAttempt[0]);
+                        handler.postDelayed(this, 500L);
+                    }
+                });
+            }
+        };
+        handler.post(pollRunnable);
+    }
+
+    private void waitForResponseCompletion() {
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final int maxAttempts = 30; // 15 seconds timeout
+        final int[] currentAttempt = {0};
+        final String checkInProgressScript = "(function() {" +
+                "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
+                "    const pendingRequest = document.querySelector('pending-request');" +
+                "    return stopButton != null || pendingRequest != null;" +
+                "})();";
+
+        Runnable checkRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (pendingCallback == null) return;
+
+                currentAttempt[0]++;
+                if (currentAttempt[0] > maxAttempts) {
+                    Log.e(TAG, "Timed out waiting for response to complete.");
+                    handleError("Response generation timed out.");
+                    return;
+                }
+
+                serviceContext.evaluateJavascriptInBackground(checkInProgressScript, isGenerating -> {
+                    if ("true".equals(isGenerating)) {
+                        Log.d(TAG, "Still generating response... (" + currentAttempt[0] + "/" + maxAttempts + ")");
+                        handler.postDelayed(this, 500L);
+                    } else {
+                        Log.d(TAG, "Response generation complete. Extracting final response.");
+                        extractFinalResponse();
+                    }
+                });
+            }
+        };
+        handler.post(checkRunnable);
+    }
+
+    private void extractFinalResponse() {
+        final String extractionScript = "(function() {" +
+                "    function findElement(selector, root = document.body) {" +
+                "        const element = root.querySelector(selector);" +
+                "        if (element) return element;" +
+                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
+                "        for (const shadowRoot of shadowRoots) {" +
+                "            const found = findElement(selector, shadowRoot);" +
+                "            if (found) return found;" +
+                "        }" +
+                "        return null;" +
+                "    }" +
+                "    const conversations = document.querySelectorAll('div.conversation-container');" +
+                "    if (conversations.length === 0) { return 'ERROR: No conversation containers found.'; }" +
+                "    const lastConversation = conversations[conversations.length - 1];" +
+                "    const responseElement = findElement('model-response .markdown', lastConversation);" +
+                "    if (!responseElement) { return 'ERROR: Response markdown element not found.'; }" +
+                "    return responseElement.textContent;" +
+                "})();";
+
+        serviceContext.evaluateJavascriptInBackground(extractionScript, response -> {
+            if (response == null || response.contains("\"ERROR:")) {
+                handleError("Failed to extract response: " + response);
+            } else {
+                String cleanedResponse = (response != null && !"null".equals(response))
+                        ? response.substring(1, response.length() - 1).replace("\\n", "\n").replace("\\\"", "\"")
+                        : "";
+                handleSuccess(cleanedResponse);
+            }
+        });
+    }
+
     private String escapeForJsString(String input) {
         if (input == null) return "";
         StringBuilder sb = new StringBuilder();
@@ -316,218 +435,11 @@ public class GeminiWebHelper {
         return sb.toString();
     }
 
-    private void submitTextAndSend() {
-        String escapedPrompt = escapeForJsString(finalPrompt);
-        String finalAutomationScript =
-                "(function() {" +
-                "    function findElement(selector, root = document.body) {" +
-                "        const element = root.querySelector(selector);" +
-                "        if (element) return element;" +
-                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
-                "        for (const shadowRoot of shadowRoots) {" +
-                "            const found = findElement(selector, shadowRoot);" +
-                "            if (found) return found;" +
-                "        }" +
-                "        return null;" +
-                "    }" +
-                "    const editorDiv = findElement('rich-textarea .ql-editor');" +
-                "    if (!editorDiv) { return 'ERROR: Editor div not found.'; }" +
-                "    let p = editorDiv.querySelector('p');" +
-                "    if (!p) { p = document.createElement('p'); editorDiv.appendChild(p); }" +
-                "    while (p.firstChild) { p.removeChild(p.firstChild); }" +
-                "    p.appendChild(document.createTextNode(" + escapedPrompt + "));" +
-                "    const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
-                "    const stopButton = findElement('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
-                "    if (!sendButton) {" +
-                "        // Send 버튼이 없을 때, 중지버튼/진행중 버튼이 있는지 확인" +
-                "        if (stopButton || findElement('pending-request')) {" +
-                "            // 중지버튼이 활성화된 상태면 중지 후 입력창 클리어" +
-                "            if (stopButton && !stopButton.disabled) {" +
-                "                stopButton.click();" +
-                "                setTimeout(function() {" +
-                "                    while (editorDiv.firstChild) { editorDiv.removeChild(editorDiv.firstChild); }" +
-                "                    var pTag = document.createElement('p');" +
-                "                    var brTag = document.createElement('br');" +
-                "                    pTag.appendChild(brTag);" +
-                "                    editorDiv.appendChild(pTag);" +
-                "                }, 500);" +
-                "                return 'STOPPED_AND_CLEARED';" +
-                "            } else {" +
-                "                return 'ERROR: Send button not found, but response is generating (disabled).';" +
-                "            }" +
-                "        }" +
-                "        return 'ERROR: Send button not found or disabled after adding text.';" +
-                "    }" +
-                "    if (sendButton.disabled) {" +
-                "        return 'ERROR: Send button is disabled.';" +
-                "    }" +
-                "    setTimeout(function() { sendButton.click(); }, 100);" +
-                "    return 'SUBMITTED';" +
-                "})();";
-
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            serviceContext.evaluateJavascriptInBackground(finalAutomationScript, result -> {
-                Log.d(TAG, "submitTextAndSend: result = "+result);
-                if (result == null || result.contains("ERROR:")) {
-                    // 추가: STOPPED_AND_CLEARED는 성공으로 처리
-                    if ("\"STOPPED_AND_CLEARED\"".equals(result)) {
-                        handleSuccess("Stopped and cleared input due to active response.");
-                    } else {
-                        handleError("Web automation script failed: " + (result != null ? result : "null result"));
-                    }
-                } else if ("\"SUBMITTED\"".equals(result)) {
-                    Log.d(TAG, "Prompt submitted via script. Polling for response.");
-                    pollForResponse();
-                } else {
-                    handleError("Web automation script returned unexpected value: " + result);
-                }
-            });
-        }, 1000);
-    }
-
-    private void pollForResponse() {
-        final Handler handler = new Handler(Looper.getMainLooper());
-        final int maxAttempts = 40; // 20초 타임아웃 (0.5초 * 40)
-        final int[] currentAttempt = {0};
-
-        // --- 수정: 응답 생성 시작을 직접 감지하는 스크립트로 변경 ---
-        final String checkGenerationStartScript = "(function() {" +
-                "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
-                "    const pendingRequest = document.querySelector('pending-request');" +
-                "    return stopButton != null || pendingRequest != null;" +
-                "})();";
-
-        handler.post(new Runnable() {
-            @Override
-            public void run() {
-                if (pendingCallback == null) return;
-
-                currentAttempt[0]++;
-                if (currentAttempt[0] > maxAttempts) {
-                    Log.e(TAG, "Polling timed out waiting for response generation to start.");
-                    handleError("Response generation timed out.");
-                    return;
-                }
-
-                serviceContext.evaluateJavascriptInBackground(checkGenerationStartScript, isGenerating -> {
-                    if (pendingCallback == null) return;
-
-                    if ("true".equals(isGenerating)) {
-                        Log.d(TAG, "Response generation has started. Proceeding to wait for completion.");
-                        waitForResponseCompletion();
-                    } else {
-                        Log.d(TAG, "Waiting for response generation to start... Attempt " + currentAttempt[0]);
-                        handler.postDelayed(this, 500L);
-                    }
-                });
-            }
-        });
-    }
-
-    private void waitForResponseCompletion() {
-        final Handler handler = new Handler(Looper.getMainLooper());
-        final int maxAttempts = 100; // 50초 타임아웃 (0.5초 * 100)
-        final int[] currentAttempt = {0};
-        final String checkInProgressScript = "(function() {" +
-                "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
-                "    const pendingRequest = document.querySelector('pending-request');" +
-                "    return stopButton != null || pendingRequest != null;" +
-                "})();";
-
-        handler.post(new Runnable() {
-            @Override
-            public void run() {
-                if (pendingCallback == null) return;
-
-                currentAttempt[0]++;
-                if (currentAttempt[0] > maxAttempts) {
-                    Log.e(TAG, "Timed out waiting for response generation to complete. Attempting to stop generation.");
-                    // 수정: 타임아웃 시 생성 중지 및 입력창 초기화 스크립트 실행
-                    final String stopAndClearScript = "(function() {" +
-                            "    function findElement(selector, root = document.body) {" +
-                            "        const element = root.querySelector(selector);" +
-                            "        if (element) return element;" +
-                            "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
-                            "        for (const shadowRoot of shadowRoots) {" +
-                            "            const found = findElement(selector, shadowRoot);" +
-                            "            if (found) return found;" +
-                            "        }" +
-                            "        return null;" +
-                            "    }" +
-                            "    const stopButton = findElement('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
-                            "    if (stopButton) {" +
-                            "        stopButton.click();" +
-                            "        setTimeout(() => {" +
-                            "            const editorDiv = findElement('rich-textarea .ql-editor');" +
-                            "            if (editorDiv) {" +
-                            "                while (editorDiv.firstChild) { editorDiv.removeChild(editorDiv.firstChild); }" +
-                            "                const pTag = document.createElement('p');" +
-                            "                const brTag = document.createElement('br');" +
-                            "                pTag.appendChild(brTag);" +
-                            "                editorDiv.appendChild(pTag);" +
-                            "            }" +
-                            "        }, 500);" +
-                            "    }" +
-                            "})();";
-                    serviceContext.evaluateJavascriptInBackground(stopAndClearScript, result -> {
-                        // 중지 시도 후 타임아웃 에러를 보고합니다.
-                        handleError("Response generation timed out.");
-                    });
-                    return;
-                }
-
-                serviceContext.evaluateJavascriptInBackground(checkInProgressScript, isGenerating -> {
-                    if ("true".equals(isGenerating)) {
-                        Log.d("GeminiWebHelper", "Still generating response. Waiting... (" + currentAttempt[0] + "/" + maxAttempts + ")");
-                        handler.postDelayed(this, 500L);
-                    } else {
-                        Log.d("GeminiWebHelper", "Response generation complete. Extracting final response.");
-                        extractFinalResponse();
-                    }
-                });
-            }
-        });
-    }
-
-    private void extractFinalResponse() {
-        final String extractionScript = "(function() {" +
-                "    function findElement(selector, root = document.body) {" +
-                "        const element = root.querySelector(selector);" +
-                "        if (element) return element;" +
-                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
-                "        for (const shadowRoot of shadowRoots) {" +
-                "            const found = findElement(selector, shadowRoot);" +
-                "            if (found) return found;" +
-                "        }" +
-                "        return null;" +
-                "    }" +
-                "    const conversations = document.querySelectorAll('div.conversation-container');" +
-                "    if (conversations.length === 0) { return 'ERROR: No conversation containers found.'; }" +
-                "    const lastConversation = conversations[conversations.length - 1];" +
-                "    const responseElement = findElement('model-response .markdown', lastConversation);" + // 수정: Shadow DOM 탐색 함수 사용
-                "    if (!responseElement) { return 'ERROR: Response markdown element not found in last conversation.'; }" +
-                "    return responseElement.textContent;" +
-                "})();";
-
-        serviceContext.evaluateJavascriptInBackground(extractionScript, response -> {
-            if (response == null || response.contains("\"ERROR:")) {
-                handleError("Failed to extract response: " + response);
-            } else {
-                String cleanedResponse = (response != null && !"null".equals(response))
-                        ? response.substring(1, response.length() - 1).replace("\\n", "\n").replace("\\\"", "\"")
-                        : "";
-                handleSuccess(cleanedResponse);
-            }
-        });
-    }
-
     private void handleSuccess(String response) {
         // --- 수정: 콜백을 안전하게 처리하고 상태를 리셋합니다. ---
         ModelResponseCallback callbackToNotify = this.pendingCallback;
-        this.pendingCallback = null; // 콜백 중복 호출 방지를 위해 즉시 null로 설정
-
         if (callbackToNotify != null) {
-            callbackToNotify.onSuccess(response);
+            new Handler(Looper.getMainLooper()).post(() -> callbackToNotify.onSuccess(response));
         }
         cleanup();
     }
@@ -535,24 +447,19 @@ public class GeminiWebHelper {
     private void handleError(String error) {
         // --- 수정: 콜백을 안전하게 처리하고 상태를 리셋합니다. ---
         ModelResponseCallback callbackToNotify = this.pendingCallback;
-        this.pendingCallback = null; // 콜백 중복 호출 방지를 위해 즉시 null로 설정
-
+        Log.e(TAG, "Error: " + error);
         if (callbackToNotify != null) {
-            callbackToNotify.onError(error);
+            new Handler(Looper.getMainLooper()).post(() -> callbackToNotify.onError(error));
         }
         cleanup();
     }
 
     private void cleanup() {
-        // isAwaitingLoginCheck = false; // --- 제거 ---
-//        // 리스너를 null로 설정하여 이 인스턴스가 더 이상 페이지 로드 이벤트를 받지 않도록 합니다.
-//        if (serviceContext != null) {
-//            // 리스너를 제거하는 대신, 다른 헬퍼가 리스너를 덮어쓸 수 있도록 그대로 둡니다.
-//            serviceContext.setPageLoadListener(null);
-//        }
-        // --- 추가: 모든 작업 완료/실패 시 상태 플래그를 확실히 리셋합니다. ---
-        isAwaitingSubmission.set(false);
-        pendingCallback = null;
+        Log.d(TAG, "Cleaning up and releasing request lock.");
+        this.pendingCallback = null;
+        this.finalPrompt = null;
+        this.pendingBitmap = null;
+        this.isRequestInProgress.set(false);
     }
 
     // --- 추가: GemmaManager와 동일한 격자 그리기 메서드 ---
@@ -590,10 +497,5 @@ public class GeminiWebHelper {
                 Log.d(TAG, "[DEBUG] Current WebView URL: " + (url != null ? url.replace("\"", "") : "N/A"));
             });
         }
-    }
-
-    public interface WebHelperCallback {
-        void onSuccess(String result);
-        void onFailure(String error);
     }
 }
