@@ -289,10 +289,37 @@ public class GeminiWebHelper {
         });
     }
 
+    // JS 문자열 리터럴로 안전하게 이스케이프하는 함수 추가
+    private String escapeForJsString(String input) {
+        if (input == null) return "";
+        StringBuilder sb = new StringBuilder();
+        sb.append("\"");
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '\"': sb.append("\\\""); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                case '\b': sb.append("\\b"); break;
+                case '\f': sb.append("\\f"); break;
+                default:
+                    if (c < 32 || c > 126) {
+                        sb.append(String.format("\\u%04x", (int)c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        sb.append("\"");
+        return sb.toString();
+    }
+
     private void submitTextAndSend() {
-        String escapedPrompt = JSONObject.quote(finalPrompt);
-        // 수정: 텍스트가 항상 .ql-editor 내부에 삽입되도록 스크립트를 수정합니다.
-        String finalAutomationScript = "(function() {" +
+        String escapedPrompt = escapeForJsString(finalPrompt);
+        String finalAutomationScript =
+                "(function() {" +
                 "    function findElement(selector, root = document.body) {" +
                 "        const element = root.querySelector(selector);" +
                 "        if (element) return element;" +
@@ -306,26 +333,48 @@ public class GeminiWebHelper {
                 "    const editorDiv = findElement('rich-textarea .ql-editor');" +
                 "    if (!editorDiv) { return 'ERROR: Editor div not found.'; }" +
                 "    let p = editorDiv.querySelector('p');" +
-                "    if (!p) {" +
-                "        p = document.createElement('p');" +
-                "        editorDiv.appendChild(p);" +
-                "    }" +
-                "    // 기존 내용 비우고 텍스트 삽입" +
-                "    while (p.firstChild) { p.removeChild(p.firstChild); }"+
+                "    if (!p) { p = document.createElement('p'); editorDiv.appendChild(p); }" +
+                "    while (p.firstChild) { p.removeChild(p.firstChild); }" +
                 "    p.appendChild(document.createTextNode(" + escapedPrompt + "));" +
                 "    const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
-                "    if (!sendButton) { return 'ERROR: Send button not found or disabled after adding text.'; }" +
-                "    sendButton.click();" +
+                "    const stopButton = findElement('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
+                "    if (!sendButton) {" +
+                "        // Send 버튼이 없을 때, 중지버튼/진행중 버튼이 있는지 확인" +
+                "        if (stopButton || findElement('pending-request')) {" +
+                "            // 중지버튼이 활성화된 상태면 중지 후 입력창 클리어" +
+                "            if (stopButton && !stopButton.disabled) {" +
+                "                stopButton.click();" +
+                "                setTimeout(function() {" +
+                "                    while (editorDiv.firstChild) { editorDiv.removeChild(editorDiv.firstChild); }" +
+                "                    var pTag = document.createElement('p');" +
+                "                    var brTag = document.createElement('br');" +
+                "                    pTag.appendChild(brTag);" +
+                "                    editorDiv.appendChild(pTag);" +
+                "                }, 500);" +
+                "                return 'STOPPED_AND_CLEARED';" +
+                "            } else {" +
+                "                return 'ERROR: Send button not found, but response is generating (disabled).';" +
+                "            }" +
+                "        }" +
+                "        return 'ERROR: Send button not found or disabled after adding text.';" +
+                "    }" +
+                "    if (sendButton.disabled) {" +
+                "        return 'ERROR: Send button is disabled.';" +
+                "    }" +
+                "    setTimeout(function() { sendButton.click(); }, 100);" +
                 "    return 'SUBMITTED';" +
                 "})();";
 
-
-        // 텍스트 추가 후 버튼이 활성화될 시간을 벌기 위해 약간의 딜레이를 줍니다.
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             serviceContext.evaluateJavascriptInBackground(finalAutomationScript, result -> {
-                // --- 수정: JavaScript의 반환값을 직접 확인하여 에러를 처리합니다. ---
+                Log.d(TAG, "submitTextAndSend: result = "+result);
                 if (result == null || result.contains("ERROR:")) {
-                    handleError("Web automation script failed: " + (result != null ? result : "null result"));
+                    // 추가: STOPPED_AND_CLEARED는 성공으로 처리
+                    if ("\"STOPPED_AND_CLEARED\"".equals(result)) {
+                        handleSuccess("Stopped and cleared input due to active response.");
+                    } else {
+                        handleError("Web automation script failed: " + (result != null ? result : "null result"));
+                    }
                 } else if ("\"SUBMITTED\"".equals(result)) {
                     Log.d(TAG, "Prompt submitted via script. Polling for response.");
                     pollForResponse();
@@ -333,7 +382,7 @@ public class GeminiWebHelper {
                     handleError("Web automation script returned unexpected value: " + result);
                 }
             });
-        }, 1000); // 딜레이를 1000ms로 늘려 안정성 확보
+        }, 1000);
     }
 
     private void pollForResponse() {
@@ -377,7 +426,7 @@ public class GeminiWebHelper {
 
     private void waitForResponseCompletion() {
         final Handler handler = new Handler(Looper.getMainLooper());
-        final int maxAttempts = 20; // 20초 타임아웃 (1초 * 20)
+        final int maxAttempts = 100; // 50초 타임아웃 (0.5초 * 100)
         final int[] currentAttempt = {0};
         final String checkInProgressScript = "(function() {" +
                 "    const stopButton = document.querySelector('button[aria-label=\"대답 생성 중지\"], button[aria-label=\"Stop generating response\"]');" +
