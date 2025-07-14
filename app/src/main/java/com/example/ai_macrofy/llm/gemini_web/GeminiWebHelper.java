@@ -291,48 +291,7 @@ public class GeminiWebHelper {
 
     private void submitTextAndSend() {
         String escapedPrompt = JSONObject.quote(finalPrompt);
-        // 수정: 전송 버튼을 찾는 로직을 재시도 기능과 함께 강화합니다.
-        String automationScript = "(function() {" +
-                "    function findElement(selector, root = document.body) {" +
-                "        const element = root.querySelector(selector);" +
-                "        if (element) return element;" +
-                "        const shadowRoots = Array.from(root.querySelectorAll('*')).map(el => el.shadowRoot).filter(Boolean);" +
-                "        for (const shadowRoot of shadowRoots) {" +
-                "            const found = findElement(selector, shadowRoot);" +
-                "            if (found) return found;" +
-                "        }" +
-                "        return null;" +
-                "    }" +
-                "    const editorDiv = findElement('rich-textarea .ql-editor');" +
-                "    if (!editorDiv) { return 'ERROR: Editor div not found.'; }" +
-                "    let pTag = editorDiv.querySelector('p');" +
-                "    if (!pTag) { pTag = document.createElement('p'); editorDiv.appendChild(pTag); }" +
-                "    pTag.appendChild(document.createTextNode(' ' + " + escapedPrompt + "));" +
-                "    const maxAttempts = 10;" +
-                "    let attempts = 0;" +
-                "    function clickSendButton() {" +
-                "        const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
-                "        if (sendButton) {" +
-                "            sendButton.click();" +
-                "            window.androidCallbackForSubmit('SUBMITTED');" + // 콜백을 위한 가상 함수 호출
-                "        } else if (attempts < maxAttempts) {" +
-                "            attempts++;" +
-                "            setTimeout(clickSendButton, 200);" +
-                "        } else {" +
-                "            window.androidCallbackForSubmit('ERROR: Send button not found or disabled.');" +
-                "        }" +
-                "    }" +
-                "    clickSendButton();" +
-                "    return 'ATTEMPTING_SUBMIT';" + // 스크립트가 즉시 반환하는 값
-                "})();";
-
-        // 비동기 스크립트의 실제 결과를 처리하기 위해 콜백 방식과 유사하게 구현합니다.
-        // 여기서는 간단하게 evaluateJavascriptInBackground를 사용하고, 스크립트 내에서 콜백을 흉내 냅니다.
-        // 실제 콜백을 구현하려면 MyForegroundService에 evaluateJavascriptWithCallback 같은 메서드가 필요합니다.
-        // 지금은 스크립트가 반환하는 최종 상태를 신뢰하고 진행합니다.
-        // 위 스크립트는 즉시 반환하므로, 실제 클릭 결과는 알 수 없습니다.
-        // 따라서, 스크립트를 동기적으로 결과를 반환하도록 수정합니다.
-
+        // 수정: 텍스트가 항상 .ql-editor 내부에 삽입되도록 스크립트를 수정합니다.
         String finalAutomationScript = "(function() {" +
                 "    function findElement(selector, root = document.body) {" +
                 "        const element = root.querySelector(selector);" +
@@ -346,14 +305,17 @@ public class GeminiWebHelper {
                 "    }" +
                 "    const editorDiv = findElement('rich-textarea .ql-editor');" +
                 "    if (!editorDiv) { return 'ERROR: Editor div not found.'; }" +
-                "    const newPromptParagraph = document.createElement('p');" +
-                "    newPromptParagraph.appendChild(document.createTextNode(" + escapedPrompt + "));" +
-                "    editorDiv.appendChild(newPromptParagraph);" +
-                "    setTimeout(() => {" +
-                "        const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
-                "        if (!sendButton) { console.error('ERROR: Send button not found or disabled.'); return; }" +
-                "        sendButton.click();" +
-                "    }, 100);" + // 텍스트 추가 후 버튼이 활성화될 시간을 벌기 위해 100ms 지연
+                "    let p = editorDiv.querySelector('p');" +
+                "    if (!p) {" +
+                "        p = document.createElement('p');" +
+                "        editorDiv.appendChild(p);" +
+                "    }" +
+                "    // 기존 내용 비우고 텍스트 삽입" +
+                "    while (p.firstChild) { p.removeChild(p.firstChild); }"+
+                "    p.appendChild(document.createTextNode(" + escapedPrompt + "));" +
+                "    const sendButton = findElement('button[aria-label=\"Send message\"]:not([disabled]), button[aria-label=\"메시지 보내기\"]:not([disabled])');" +
+                "    if (!sendButton) { return 'ERROR: Send button not found or disabled after adding text.'; }" +
+                "    sendButton.click();" +
                 "    return 'SUBMITTED';" +
                 "})();";
 
@@ -361,13 +323,17 @@ public class GeminiWebHelper {
         // 텍스트 추가 후 버튼이 활성화될 시간을 벌기 위해 약간의 딜레이를 줍니다.
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             serviceContext.evaluateJavascriptInBackground(finalAutomationScript, result -> {
-                if (!"\"SUBMITTED\"".equals(result)) {
-                    handleError("Web automation script failed: " + result);
-                } else {
+                // --- 수정: JavaScript의 반환값을 직접 확인하여 에러를 처리합니다. ---
+                if (result == null || result.contains("ERROR:")) {
+                    handleError("Web automation script failed: " + (result != null ? result : "null result"));
+                } else if ("\"SUBMITTED\"".equals(result)) {
+                    Log.d(TAG, "Prompt submitted via script. Polling for response.");
                     pollForResponse();
+                } else {
+                    handleError("Web automation script returned unexpected value: " + result);
                 }
             });
-        }, 300); // 300ms 딜레이 추가
+        }, 1000); // 딜레이를 1000ms로 늘려 안정성 확보
     }
 
     private void pollForResponse() {

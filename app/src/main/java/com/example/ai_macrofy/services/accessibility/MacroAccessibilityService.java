@@ -304,6 +304,7 @@ public class MacroAccessibilityService extends AccessibilityService {
         JSONObject coordinates = action.getJSONObject("coordinates");
         int x = coordinates.getInt("x");
         int y = coordinates.getInt("y");
+        // 수정: 편집 가능한 노드를 찾는 전용 메서드 사용
         return performInput(text, x, y);
     }
     /**
@@ -394,10 +395,11 @@ public class MacroAccessibilityService extends AccessibilityService {
     private boolean performInput(String text, int x, int y) {
         AccessibilityNodeInfo rootNode = getRootInActiveWindow();
         if (rootNode == null) return false;
-        AccessibilityNodeInfo targetNode = findClickableNodeAtCoordinates(rootNode, x, y); // Find a node to tap first
+        // 수정: findClickableNodeAtCoordinates 대신 findEditableNodeAtCoordinates 사용
+        AccessibilityNodeInfo targetNode = findEditableNodeAtCoordinates(rootNode, x, y);
         rootNode.recycle();
 
-        if (targetNode != null && targetNode.isEditable()) {
+        if (targetNode != null) { // isEditable() 체크는 findEditableNodeAtCoordinates에서 이미 수행됨
             targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
             Bundle args = new Bundle();
             args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
@@ -405,7 +407,6 @@ public class MacroAccessibilityService extends AccessibilityService {
             targetNode.recycle();
             return success;
         }
-        if(targetNode != null) targetNode.recycle();
         return false;
     }
     private boolean performScroll(String direction, int centerX, int centerY, int distance) {
@@ -471,6 +472,54 @@ public class MacroAccessibilityService extends AccessibilityService {
                 } else {
                     Rect bestMatchBounds = new Rect();
                     bestMatch.getBoundsInScreen(bestMatchBounds);
+                    if ((long)currentBounds.width() * currentBounds.height() < (long)bestMatchBounds.width() * bestMatchBounds.height()) {
+                        bestMatch.recycle();
+                        bestMatch = AccessibilityNodeInfo.obtain(currentNode);
+                    }
+                }
+            }
+
+            for (int i = 0; i < currentNode.getChildCount(); i++) {
+                AccessibilityNodeInfo child = currentNode.getChild(i);
+                if (child != null) {
+                    deque.add(AccessibilityNodeInfo.obtain(child));
+                }
+            }
+            currentNode.recycle();
+        }
+        return bestMatch;
+    }
+
+    /**
+     * 주어진 좌표에서 가장 작은 '편집 가능한' 노드를 찾습니다.
+     * @param parentNode 검색을 시작할 부모 노드
+     * @param x 화면의 x 좌표
+     * @param y 화면의 y 좌표
+     * @return 찾은 노드 또는 null
+     */
+    private AccessibilityNodeInfo findEditableNodeAtCoordinates(AccessibilityNodeInfo parentNode, int x, int y) {
+        if (parentNode == null) return null;
+
+        Deque<AccessibilityNodeInfo> deque = new ArrayDeque<>();
+        deque.add(AccessibilityNodeInfo.obtain(parentNode));
+
+        AccessibilityNodeInfo bestMatch = null;
+
+        while (!deque.isEmpty()) {
+            AccessibilityNodeInfo currentNode = deque.poll();
+            if (currentNode == null) continue;
+
+            Rect currentBounds = new Rect();
+            currentNode.getBoundsInScreen(currentBounds);
+
+            // isClickable() 대신 isEditable()을 확인합니다.
+            if (currentBounds.contains(x, y) && currentNode.isEditable()) {
+                if (bestMatch == null) {
+                    bestMatch = AccessibilityNodeInfo.obtain(currentNode);
+                } else {
+                    Rect bestMatchBounds = new Rect();
+                    bestMatch.getBoundsInScreen(bestMatchBounds);
+                    // 더 작은 노드를 우선합니다.
                     if ((long)currentBounds.width() * currentBounds.height() < (long)bestMatchBounds.width() * bestMatchBounds.height()) {
                         bestMatch.recycle();
                         bestMatch = AccessibilityNodeInfo.obtain(currentNode);
