@@ -11,6 +11,8 @@ import android.util.Log;
 
 import com.example.ai_macrofy.utils.AppPreferences;
 import com.example.ai_macrofy.utils.SharedWebViewManager;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -24,8 +26,20 @@ public class MainApplication extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        Log.d(TAG, "Application onCreate.");
 
-        // 앱 시작 시 백그라운드 스레드에서 앱 목록을 캐싱합니다.
+        // Initialize SharedWebViewManager safely
+        // This pre-warms the WebView, and if it fails, it allows the app to continue
+        // for other AI providers that do not depend on the WebView.
+        try {
+            SharedWebViewManager.getWebView(this);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to pre-initialize WebView in Application. " +
+                    "Web-dependent features may not work.", e);
+        }
+
+
+        // Start caching the app list in the background
         new Thread(this::cacheAppList).start();
     }
 

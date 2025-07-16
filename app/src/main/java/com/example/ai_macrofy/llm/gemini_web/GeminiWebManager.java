@@ -94,6 +94,9 @@ public class GeminiWebManager implements AiModelService {
     @Override
     public void cleanup() {
         Log.d(TAG, "Cleaning up GeminiWebManager.");
+        if (webHelper != null) {
+            webHelper.cleanup();
+        }
         isFirstRequest = true; // --- 추가: 서비스 종료 시 플래그를 리셋합니다. ---
         executor.shutdownNow();
     }

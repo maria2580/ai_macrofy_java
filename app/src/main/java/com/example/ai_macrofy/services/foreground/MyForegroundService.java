@@ -55,6 +55,7 @@ import com.example.ai_macrofy.ui.PermissionRequestActivity;
 import com.example.ai_macrofy.ui.WebViewActivity;
 import com.example.ai_macrofy.utils.AppPreferences;
 import com.example.ai_macrofy.utils.SharedWebViewManager;
+import com.example.ai_macrofy.ui.WebViewRecoveryActivity;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -415,8 +416,16 @@ public class MyForegroundService extends Service {
 
             if (backgroundWebView == null) {
                 Log.e("MyForegroundService", "WebView initialization failed. Cannot use Gemini Web provider.");
-                mainHandler.post(() -> Toast.makeText(getApplicationContext(), "WebView is not available on this device.", Toast.LENGTH_LONG).show());
-                stopMacroExecution();
+                
+                // --- 수정: Toast 대신 복구 Activity를 시작합니다. ---
+                Intent dialogIntent = new Intent(this, WebViewRecoveryActivity.class);
+                dialogIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(dialogIntent);
+
+                // 현재 매크로 인스턴스만 중지합니다.
+                isMacroRunning = false;
+                stopForeground(true);
+                stopSelf();
                 return;
             }
 

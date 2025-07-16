@@ -51,6 +51,13 @@
         </activity>
 
         <activity
+            android:name=".ui.WebViewRecoveryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.Light.Dialog"
+            android:excludeFromRecents="true"
+            />
+
+        <activity
             android:name=".ui.WebViewActivity"
             android:exported="false"
             android:label="Login to Google"
