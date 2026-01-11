@@ -1,0 +1,72 @@
+[
+  {
+    "task_name": "CameraTakePhoto",
+    "task_template": "Take one photo.",
+    "parameters": {},
+    "difficulty": "easy",
+    "optimal_steps": 2
+  },
+  {
+    "task_name": "ContactsAddContact",
+    "task_template": "Create a new contact for {name}. Their number is {number}.",
+    "parameters": {"name": "홍길동", "number": "010-1234-5678"},
+    "difficulty": "easy",
+    "optimal_steps": 5
+  },
+  {
+    "task_name": "SystemWifiTurnOn",
+    "task_template": "Turn wifi {on_or_off}.",
+    "parameters": {"on_or_off": "on"},
+    "difficulty": "easy",
+    "optimal_steps": 3
+  },
+  {
+    "task_name": "FilesMoveFile",
+    "task_template": "Move the file {file_name} from {source_folder} within the sdk_gphone_x86_64 storage area to the {destination_folder} within the same sdk_gphone_x86_64 storage area in the Android filesystem.",
+    "parameters": {"file_name": "test.txt", "source_folder": "Download", "destination_folder": "Documents"},
+    "difficulty": "medium",
+    "optimal_steps": 10
+  },
+  {
+    "task_name": "MarkorCreateNote",
+    "task_template": "Create a new note in Markor named {file_name} with the following text: {text}",
+    "parameters": {"file_name": "benchmark_note.md", "text": "이것은 벤치마크 테스트용 메모입니다."},
+    "difficulty": "medium",
+    "optimal_steps": 8
+  },
+  {
+    "task_name": "SimpleCalendarAddOneEventInTwoWeeks",
+    "task_template": "In Simple Calendar Pro, create a calendar event in two weeks from today at {hour}h with the title '{event_title}' and the description '{event_description}'. The event should last for {duration_mins} mins.",
+    "parameters": {"hour": "10", "event_title": "프로젝트 마감", "event_description": "최종 결과물 제출", "duration_mins": "120"},
+    "difficulty": "medium",
+    "optimal_steps": 10
+  },
+  {
+    "task_name": "SimpleSmsReplyMostRecent",
+    "task_template": "Reply to the most recent text message using Simple SMS Messenger with message: {message}",
+    "parameters": {"message": "알겠습니다, 곧 연락드리겠습니다."},
+    "difficulty": "medium",
+    "optimal_steps": 5
+  },
+  {
+    "task_name": "RetroSavePlaylist",
+    "task_template": "Create a playlist in Retro Music titled \"{playlist_name}\" with the following songs, in order: {names}. Then export the playlist to the Downloads directory on the device.",
+    "parameters": {"playlist_name": "Favorites", "names": "Beyond the Horizon, Dreamer's Awake, Golden Days"},
+    "difficulty": "hard",
+    "optimal_steps": 25
+  },
+  {
+    "task_name": "MarkorMergeNotes",
+    "task_template": "Merge the contents of Markor notes {file1_name}, {file2_name} and {file3_name} (in the same order) into a new Markor note named {new_file_name} and save it. Add a new line between the content of each note.",
+    "parameters": {"file1_name": "note1.md", "file2_name": "note2.md", "file3_name": "note3.md", "new_file_name": "merged.md"},
+    "difficulty": "hard",
+    "optimal_steps": 39
+  },
+  {
+    "task_name": "SaveCopyOfReceiptTaskEval",
+    "task_template": "Copy {file_name} in DCIM and save a copy with the same name in Download",
+    "parameters": {"file_name": "receipt.jpg"},
+    "difficulty": "hard",
+    "optimal_steps": 8
+  }
+]
